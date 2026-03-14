@@ -1,0 +1,35 @@
+{
+  "name": "jet-lag-app-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Round-based backend prototype for a Jet Lag style hide-and-seek game",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev:api": "node --watch src/server.js",
+    "dev:client": "npm --prefix client run dev",
+    "dev:mobile": "npm --prefix mobile run start",
+    "dev:android": "concurrently -n api,mobile -c yellow,magenta \"npm run dev:api\" \"npm --prefix mobile run android:local\"",
+    "dev:android:clean": "concurrently -n api,mobile -c yellow,magenta \"npm run dev:api\" \"npm --prefix mobile run android:local:clear\"",
+    "dev": "concurrently -n api,client -c yellow,cyan \"npm run dev:api\" \"npm run dev:client\"",
+    "dev:all": "concurrently -n api,client,mobile -c yellow,cyan,magenta \"npm run dev:api\" \"npm run dev:client\" \"npm run dev:mobile\"",
+    "build:client": "npm --prefix client run build",
+    "preview:client": "npm --prefix client run preview",
+    "mobile:android": "npm --prefix mobile run android",
+    "smoke": "node scripts/smoke-test.js",
+    "test:task1": "node scripts/task1-regression-test.js",
+    "test:task3": "node scripts/task3-ws-test.js",
+    "test:task4": "node scripts/task4-round-actions-test.js",
+    "test:task5": "node scripts/task5-auth-persistence-test.js",
+    "test:task6": "node scripts/task6-push-test.js",
+    "test:task7": "node scripts/task7-auth-ownership-test.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.6.2",
+    "jsonwebtoken": "^9.0.3"
+  }
+}

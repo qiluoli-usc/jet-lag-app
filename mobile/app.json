@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Jet Lag App Mobile",
+    "slug": "jet-lag-app-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "android": {
+      "package": "com.jetlagapp.mobile",
+      "permissions": [
+        "ACCESS_BACKGROUND_LOCATION"
+      ]
+    },
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["location", "remote-notification"],
+        "NSLocationWhenInUseUsageDescription": "Jet Lag App uses your location during live rounds so teammates can track the active player on the map.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Jet Lag App uses your location in the background during live rounds to keep the game map updated while you move.",
+        "NSLocationAlwaysUsageDescription": "Jet Lag App uses your location in the background during live rounds to keep the game map updated while you move."
+      }
+    },
+    "plugins": [
+      "expo-asset",
+      "expo-location",
+      "expo-notifications"
+    ]
+  }
+}

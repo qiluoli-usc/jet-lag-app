@@ -1,0 +1,149 @@
+Jet Lag Hide + Seek 游戏控制 APP — PRD / 开发规格（v3）
+目标：将规则书中涉及的外部软件/工具（地图、POI 检索、行政区查询、交通线路查询、绘图、掷骰、聊天、证据提交等）全部集成到 APP 内，并在同一房间内统一为同一“来源与交互”。
+生成日期：2026-02-16    文档类型：Codex-friendly Spec（可直接拆分成任务与接口）
+0. 变更说明（v2 → v3）
+v3 的核心变化：把 PRD v2 中要求玩家依赖的外部软件（例如 Google Maps/Apple Maps、外部画图、外部掷骰器、外部浏览器查询等）统一改为“APP 内置模块”，并给出可开发级接口与数据结构。
+新增：统一地图与数据源适配层（MapProviderAdapter）、内置 POI 合法性判定（review_count 规则）、内置 Wikipedia/行政区查询、内置交通线路数据（GTFS/自定义站点包）、内置绘图与证据提交、内置仲裁与投票、API 与 WebSocket 事件协议。
+1. 产品目标与非目标
+1.1 目标
+1) 任何玩家无需打开外部 App，即可完成：地图查看/POI 搜索/距离测量/范围绘制/题库提问/回答计时/抽牌施咒/掷骰/抓捕判定/复盘。
+2) 房间内“统一来源”：所有人看到同一套站点网络、POI 分类与行政区层级，仲裁结果对本房间本局固定。
+3) 对规则可配置：Small/Medium/Large 参数、题库、牌堆、扩展包可开关。
+1.2 非目标
+1) 不提供 Street View / Look Around 等街景能力（规则禁止）。
+2) 不做“自动识别照片内容”的 AI 判定；照片类任务仍以规则+人工确认+元数据（时间/位置）为主。
+3) 不承诺全球可用的地图数据覆盖；地图数据源可配置。
+2. 外部软件统一内置化（必须项）
+本节把规则/PRD v2 中涉及的外部软件全部替换为 APP 内置能力。
+外部软件/工具（过去依赖）
+v3：APP 内置替代模块
+统一化规则（房间内）
+Google Maps / Apple Maps（地图、POI 分类）
+Map + Places（统一地图与 POI 服务）
+房主在 Lobby 选择 MapProvider；房间内强制一致。
+Google Reviews（>=5 评价合法）
+PlaceDetails.review_count（内置 POI 合法性判定）
+同一 Place 数据源返回的 review_count 为准；争议进入仲裁投票。
+Wikipedia / 浏览器查行政区/概念
+In-App Reference（Wikipedia/行政区查询面板）
+引用来源与快照在房间内共享；仲裁后锁定。
+外部交通 App/时刻表/线路图
+Transit Pack（GTFS 或自定义站点包）
+房间内统一使用同一份 Transit Pack；离线可用。
+外部画图/截图标注
+In-App Map Drawing（点线面/图层/测距/温度计）
+绘制对象作为房间共享图层；可回放。
+外部掷骰器
+In-App Dice（可证明随机）
+由服务端生成随机数；全员可验证；写入日志。
+短信/IM 聊天
+In-App Chat + 结构化提问流
+“官方提问”必须走结构化组件；自由聊天可选开启。
+相机 App + 第三方上传
+In-App Camera + Evidence Upload
+照片/视频证据统一存储与回放；可附带 EXIF 时间/位置。
+注：Street View / Look Around 等街景不在 App 内提供，也不提供跳转入口；App 内只展示二维地图/卫星图（如 MapProvider 支持且房间允许）。
+3. 系统架构（Codex 实施建议）
+客户端：iOS/Android（主）+ Web（可选：裁判/复盘）。
+服务端：实时房间状态机 + 规则引擎 + 随机数服务 + 证据存储索引。
+数据：PostgreSQL（元数据）+ 对象存储（S3/兼容）存证据文件。
+实时：WebSocket（房间事件流）+ REST（查询/上传/下载）。
+3.1 模块边界
+MapProviderAdapter：抽象地图/POI/行政区/路线查询能力，屏蔽不同供应商差异。
+RulesEngine：Small/Medium/Large 参数、题库、牌堆、扩展包开关、重复提问成本倍增、超时暂停等。
+GameStateMachine：Lobby/Hiding/Seek/EndGame/Caught/Summary/NextRound，所有计时在服务端驱动。
+AntiCheat：速度异常、定位断档、手动 In-Transit 开关与速度阈值一致性检查。
+4. 状态机（机器可读）
+以下 JSON 可直接作为后端状态机配置。
+{  "states": ["LOBBY","HIDING","SEEK","END_GAME","CAUGHT","SUMMARY","NEXT_ROUND"],  "initial": "LOBBY",  "transitions": [    {"from":"LOBBY","event":"START_ROUND","to":"HIDING"},    {"from":"HIDING","event":"HIDE_TIMER_END","to":"SEEK"},    {"from":"SEEK","event":"ENTER_HIDING_ZONE_OFF_TRANSIT","to":"END_GAME"},    {"from":"SEEK","event":"CATCH_CLAIM_ACCEPTED","to":"CAUGHT"},    {"from":"END_GAME","event":"CATCH_CLAIM_ACCEPTED","to":"CAUGHT"},    {"from":"CAUGHT","event":"SETTLE_DONE","to":"SUMMARY"},    {"from":"SUMMARY","event":"NEXT_ROUND_READY","to":"NEXT_ROUND"},    {"from":"NEXT_ROUND","event":"START_ROUND","to":"HIDING"}  ]}
+5. 权限与信息差（必须一致）
+功能
+Hider
+Seeker
+Observer(可选)
+实时位置：Seekers
+可见（实时）
+队友可见
+可见
+实时位置：Hider
+自见
+默认不可见
+可见
+结构化提问
+不可发起
+可发起（串行）
+可发起(配置)
+结构化回答
+必须提交
+查看
+查看
+抽牌/手牌
+可见/可操作
+不可见
+可见(可选)
+诅咒效果
+可施放
+可见且被强制执行
+可见
+地图圈选/标注
+不可见（默认）
+可见/可编辑
+可见
+抓捕声明
+同意/申诉
+发起
+仲裁
+仲裁投票
+参与
+参与
+主持/最终裁决(可选)
+说明：为保持玩法“信息差”，Seekers 的圈地推理默认对 Hider 不可见；此项可在房间参数中开启/关闭。
+6. 数据结构（TypeScript 接口草案）
+export type GameScale = "SMALL" | "MEDIUM" | "LARGE";export type Role = "HIDER" | "SEEKER" | "OBSERVER";export interface RoomConfig {  scale: GameScale;  mapProvider: "GOOGLE" | "MAPBOX" | "AMAP" | "CUSTOM";  transitPackId?: string; // GTFS or custom stop pack  enableExpansionPackV1: boolean;  borderPolygonGeoJSON: any; // Feature<Polygon>  timers: {    hideSeconds: number;    answerSeconds: { default: number; photo: number };    nextRoundPrepSeconds: number;  };  catchRules: { distanceMeters: number; requireVisualConfirm: boolean; };  questionRules: { oneAtATime: boolean; repeatCostMultiplier: boolean; };  logging: { retainDays: number; shareHiderTrackInSummary: boolean; };}export interface Player {  playerId: string;  displayName: string;  role: Role;  teamId?: string;  location?: LocationSample;  inTransit: boolean; // manual toggle + speed heuristic}export interface LocationSample {  lat: number; lng: number;  accuracyM: number;  speedMps?: number;  headingDeg?: number;  timestampMs: number;}export type QuestionCategory = "MATCHING"|"MEASURING"|"RADAR"|"THERMOMETER"|"PHOTO"|"TENTACLES";export interface QuestionDef {  questionId: string;  category: QuestionCategory;  uiSchema: any;  costDraw: number;  costKeep: number;  answerTimeLimitSecByScale: Partial<Record<GameScale, number>>;  eligibilityRules?: string[];}export interface AskedQuestion {  askedId: string;  questionId: string;  payload: any; // selected noun/distance/task  askedByPlayerId: string;  askedAtMs: number;  deadlineMs: number;  status: "PENDING"|"ANSWERED"|"VETOED"|"EXPIRED";}export type CardType = "TIME_FIXED"|"TIME_PERCENT"|"TIME_TIMELESS"|"POWERUP"|"CURSE";export interface CardDef {  cardId: string;  type: CardType;  nameCn: string;  effectTextOfficial?: string;  rulesNotesCn?: string;  castingCostByScale?: Partial<Record<GameScale, any>>;  constraints?: { uniqueActive?: boolean; playImmediately?: boolean; };  evidenceSchema?: any;}export interface GameEvent {  eventId: string;  roomId: string;  type: string;  tsMs: number;  actorPlayerId?: string;  data: any;  visibility: "PUBLIC"|"TEAM"|"PRIVATE";}
+7. 接口规范（REST + WebSocket）
+7.1 REST（示例）
+POST /api/rooms              // create roomPOST /api/rooms/{roomId}/join     // join roomPOST /api/rooms/{roomId}/ready    // ready togglePOST /api/rooms/{roomId}/start    // start round (host)POST /api/rooms/{roomId}/location // upload location sample (client -> server)POST /api/rooms/{roomId}/transit  // set inTransit true/falsePOST /api/rooms/{roomId}/questions/askPOST /api/rooms/{roomId}/questions/{askedId}/answerPOST /api/rooms/{roomId}/cards/drawPOST /api/rooms/{roomId}/cards/playPOST /api/rooms/{roomId}/catch/claimPOST /api/rooms/{roomId}/catch/{claimId}/respond  // agree/appealPOST /api/rooms/{roomId}/disputes/{id}/votePOST /api/rooms/{roomId}/evidence/upload-init     // get signed URLPOST /api/rooms/{roomId}/evidence/complete        // finalize evidence metadataGET  /api/rooms/{roomId}/summary/{roundId}GET  /api/rooms/{roomId}/events?since=...
+7.2 WebSocket 事件（服务端广播）
+ROOM_STATE_UPDATEDPLAYER_LOCATION_UPDATEDQUESTION_ASKEDQUESTION_ANSWEREDQUESTION_VETOEDCARD_DRAWNCARD_PLAYEDCURSE_APPLIEDCURSE_RESOLVEDDICE_ROLLEDCATCH_CLAIMEDCATCH_RESULTDISPUTE_OPENEDDISPUTE_RESOLVEDSUMMARY_READY
+8. 统一地图与数据源（MapProviderAdapter 规格）
+目标：不让玩家打开 Google Maps/Apple Maps 等外部 App。App 内必须提供等价能力，并保证“房间内一致”。
+8.1 MapProviderAdapter 接口
+interface MapProviderAdapter {  // base map  getTileStyle(): Promise<any>;  // places  searchPlaces(query: string, center: {lat:number,lng:number}, radiusM: number): Promise<Place[]>;  getPlaceDetails(placeId: string): Promise<PlaceDetails>;  // admin divisions (for 1st-4th)  reverseGeocodeAdminLevels(lat:number,lng:number): Promise<AdminLevels>;  // geometry helpers  distanceMeters(a:{lat:number,lng:number}, b:{lat:number,lng:number}): number;  // transit (optional if TransitPack enabled)  getTransitLineForTrip(tripContext:any): Promise<string|null>;}
+8.2 POI 合法性判定（review_count 规则）
+对于“地点是否合法（Legitimate）”争议：App 使用 PlaceDetails 中的 review_count（例如 Google Places 的 user_ratings_total）作为默认判定阈值：>=5 视为合法；<5 视为不合法，除非房间内全员一致投票通过。
+该规则来源于官方规则的“评论数阈值”逻辑；实现时以房间统一数据源返回的 review_count 为准。
+8.3 In-App Reference（内置查询面板）
+功能：在 App 内提供可搜索的“参考信息面板”，用于查行政区层级映射、百科词条、交通线路图/时刻表快照。
+实现：默认集成 Wikipedia API + TransitPack 数据；可配置启用“白名单网页预览（可选）”。
+安全限制：不提供 Street View/Look Around/街景入口；不提供外部跳转按钮。
+9. Transit Pack（交通站点网络内置化）
+为避免依赖外部交通 App，本项目将“交通系统”做成房间资源：GTFS 或自定义站点包。
+9.1 数据包格式
+TransitPack {  packId: string;  sourceType: "GTFS" | "CUSTOM";  stops: Array<{stopId:string,name:string,lat:number,lng:number}>;  routes?: Array<{routeId:string,shortName:string,longName:string}>;  stopRouteIndex?: Record<string,string[]>; // stopId -> routeIds}
+9.2 Transit Line 题的判定
+当提问名词为 Transit Line 时：Seeker 端必须处于 inTransit=true（手动开关+速度提示）；Hider 端使用 TransitPack 判断“躲藏者最近站点是否属于该线路服务站点”。快车越站不算停靠（配置项）。
+10. UI 页面与关键交互（可直接拆分任务）
+Route
+内容
+/lobby
+房间设置、MapProvider/TransitPack 选择、边界绘制、Ready、Start
+/round/hiding
+Hide 倒计时、站点选择、生成躲藏区
+/round/seek
+地图 + 题库抽屉 + 聊天 + 圈地/测距 + 卡牌/骰子入口
+/round/endgame
+终局提示、隐藏点锁定、抓捕辅助
+/round/summary
+时间线、问答记录、卡牌与诅咒、路线回放、下一轮
+/referee
+仲裁面板（可选）
+11. 验收标准（示例）
+AC-01：房主在 Lobby 选择 MapProvider 后，所有玩家地图/POI 搜索结果必须来自同一数据源；并在事件日志记录 mapProvider。
+AC-02：在 Seek 阶段，结构化提问必须串行；同时存在一个 PENDING 问题时，“再问一题”按钮禁用。
+AC-03：Photo 题证据必须通过 App 相机拍摄或上传，自动写入拍摄时间；超时触发“暂停主计时且不发抽牌”。
+AC-04：掷骰结果由服务端生成并广播；客户端离线重连后能重放该事件并保持一致。
+AC-05：抓捕声明触发后，系统根据双方最近位置样本计算距离 <= catchRules.distanceMeters；若不满足则自动拒绝。
+12. MVP（优先级）
+P0：房间/角色/状态机计时、MapProvider 内置地图+POI 搜索、定位上报与 Hider 看 Seeker、结构化提问/回答/倒计时、抽牌/手牌上限、基础道具（Veto/Randomize/Discard）、诅咒可见与功能锁定、掷骰、抓捕判定、Summary。
+P1：TransitPack GTFS 导入、自动几何推理图层（Radar/Thermometer 辅助）、争议仲裁投票、证据回放。
+P2：扩展包全部卡牌配置化、Referee Web、统计仪表盘、离线模式优化。
