@@ -13,6 +13,7 @@ import {
   fetchRoomView,
   fetchSnapshot,
   leaveRoom,
+  nextRound,
   performRoundAction,
   setReady,
   startRound,
@@ -314,6 +315,21 @@ export function RoomScreen({
     }
   }, [httpBaseUrl, roomCode, playerId, refreshAll]);
 
+  const handlePrepareNextRound = useCallback(async () => {
+    setBusyAction("nextRound");
+    setError(null);
+    try {
+      await nextRound(httpBaseUrl, roomCode, {
+        playerId,
+      });
+      await refreshAll();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "nextRound failed");
+    } finally {
+      setBusyAction(null);
+    }
+  }, [httpBaseUrl, playerId, refreshAll, roomCode]);
+
   const handleBackPress = useCallback(async () => {
     setBusyAction("leave");
     try {
@@ -404,6 +420,7 @@ export function RoomScreen({
             onRefreshProjection={refreshAll}
             onToggleReady={handleToggleReady}
             onStartRound={handleStartRound}
+            onPrepareNextRound={handlePrepareNextRound}
             onPerformRoundAction={runRoundAction}
           />
 

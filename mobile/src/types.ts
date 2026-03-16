@@ -197,6 +197,14 @@ export interface StartRoundResponse {
   };
 }
 
+export interface NextRoundResponse {
+  state: {
+    roomId: string;
+    phase: string;
+    nextRoundNumber: number;
+  };
+}
+
 export interface DebugAdvancePhaseResponse {
   state: {
     roomId: string;

@@ -709,6 +709,39 @@ function computeSeekDurationSec(room) {
   return Math.max(0, Math.floor((endMs - room.round.seekStartedAtMs) / 1000));
 }
 
+function summarizeLocation(point) {
+  if (!point) {
+    return null;
+  }
+  return {
+    lat: Number(point.lat),
+    lng: Number(point.lng),
+    accuracy: Number(point.accuracy ?? 0),
+    ts: point.ts ?? null,
+  };
+}
+
+function summarizeLocationTrail(points, limit = 120) {
+  if (!Array.isArray(points) || points.length === 0) {
+    return [];
+  }
+
+  const slice = points.slice(-limit);
+  return slice.map((point) => summarizeLocation(point)).filter(Boolean);
+}
+
+function computeTrailDistanceMeters(points) {
+  if (!Array.isArray(points) || points.length < 2) {
+    return 0;
+  }
+
+  let total = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    total += haversineMeters(points[index - 1], points[index]);
+  }
+  return Number(total.toFixed(1));
+}
+
 function finalizeSummary(room, result) {
   const resolvedAtMs = nowMs();
   room.phase = Phase.SUMMARY;
@@ -724,6 +757,7 @@ function finalizeSummary(room, result) {
     ? Math.max(0, Math.floor((resolvedAtMs - room.round.seekStartedAtMs) / 1000))
     : 0;
   const hider = room.players.find((item) => item.role === Role.HIDER);
+  const seekers = room.players.filter((item) => item.role === Role.SEEKER);
   const handTimeBonusSec = hider ? computeTimeBonusSecFromHand(hider) : 0;
   const effectiveHideSec = hideSec + handTimeBonusSec;
 
@@ -736,6 +770,34 @@ function finalizeSummary(room, result) {
     seekDurationSec: seekSec,
     resolvedAtMs,
     resolvedAt: nowIso(),
+    hider: hider
+      ? {
+          playerId: hider.id,
+          name: hider.name,
+          finalLocation: summarizeLocation(hider.lastLocation),
+          fixedSpot: summarizeLocation(room.round.hiderFixedSpot),
+        }
+      : null,
+    hidingZone: room.round.hidingZone
+      ? {
+          ...room.round.hidingZone,
+          center: summarizeLocation(room.round.hidingZone.center),
+        }
+      : null,
+    seekerTrails: seekers.map((player) => ({
+      playerId: player.id,
+      name: player.name,
+      finalLocation: summarizeLocation(player.lastLocation),
+      totalDistanceMeters: computeTrailDistanceMeters(player.locationTrail),
+      points: summarizeLocationTrail(player.locationTrail),
+    })),
+    players: room.players.map((player) => ({
+      playerId: player.id,
+      name: player.name,
+      role: player.role,
+      ready: Boolean(player.ready),
+    })),
+    scores: deepCopy(room.scores),
   };
 
   if (result.winner === "seekers") {

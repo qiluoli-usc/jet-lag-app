@@ -591,7 +591,23 @@ const PROTOCOL = Object.freeze({
   "summary.generated": def(
     "summary.generated",
     EventVisibility.PUBLIC,
-    schema(["winner", "reason"], { winner: "string", reason: "string", effectiveHideDurationSec: "number" }),
+    schema(
+      ["winner", "reason"],
+      {
+        winner: "string",
+        reason: "string",
+        effectiveHideDurationSec: "number",
+        hideDurationSec: "number",
+        seekDurationSec: "number",
+        resolvedAt: "string",
+        resolvedAtMs: "number",
+        hider: ["object", "null"],
+        hidingZone: ["object", "null"],
+        seekerTrails: "array",
+        players: "array",
+        scores: "object",
+      },
+    ),
     (state, event) => {
       state.phase = "Summary";
       state.summary = event.data;

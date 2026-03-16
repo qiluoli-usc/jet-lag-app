@@ -21,6 +21,7 @@ interface PhaseRouterProps {
   onRefreshProjection: () => Promise<void>;
   onToggleReady: () => void;
   onStartRound: () => void;
+  onPrepareNextRound: () => void;
   onPerformRoundAction: (action: RoundAction, payload: Record<string, unknown>) => Promise<void>;
 }
 
@@ -35,12 +36,13 @@ export function PhaseRouter({
   onRefreshProjection,
   onToggleReady,
   onStartRound,
+  onPrepareNextRound,
   onPerformRoundAction,
 }: PhaseRouterProps) {
   const phase = getScreenPhase(projection);
 
   if (phase === "HIDING") {
-    return <HidingScreen />;
+    return <HidingScreen projection={projection} playerId={playerId} />;
   }
 
   if (phase === "SEEKING") {
@@ -60,7 +62,14 @@ export function PhaseRouter({
   }
 
   if (phase === "SUMMARY") {
-    return <SummaryScreen summary={projection?.summary ?? projection?.round?.summary ?? null} />;
+    return (
+      <SummaryScreen
+        summary={projection?.summary ?? projection?.round?.summary ?? null}
+        events={events}
+        busyAction={busyAction}
+        onPrepareNextRound={onPrepareNextRound}
+      />
+    );
   }
 
   return (

@@ -239,6 +239,13 @@ function formatClock(value: unknown): string {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString() : value;
 }
 
+function formatCountdownMs(value: number): string {
+  const totalSec = Math.max(0, Math.ceil(value / 1000));
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
 function getRoleHero(role: string) {
   if (role === "seeker") {
     return {
@@ -289,6 +296,7 @@ export function SeekingScreen({
   const [catchTargetId, setCatchTargetId] = useState("");
   const [rewardSelection, setRewardSelection] = useState<string[]>([]);
   const [rewardBusy, setRewardBusy] = useState(false);
+  const [uiNowMs, setUiNowMs] = useState(() => Date.now());
 
   const [locationPermission, setLocationPermission] = useState<"unknown" | "granted" | "denied">("unknown");
   const [locationBusy, setLocationBusy] = useState(false);
@@ -357,6 +365,11 @@ export function SeekingScreen({
   const latestRewardDrawData = useMemo(() => asRecord(latestRewardDrawEvent?.data), [latestRewardDrawEvent]);
   const latestRewardSelectedData = useMemo(() => asRecord(latestRewardSelectedEvent?.data), [latestRewardSelectedEvent]);
   const latestRewardSkippedData = useMemo(() => asRecord(latestRewardSkippedEvent?.data), [latestRewardSkippedEvent]);
+  const myActiveCurses = useMemo(() => {
+    return Array.isArray(me?.activeCurses)
+      ? me.activeCurses.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      : [];
+  }, [me]);
 
   const playerMarkers = useMemo(() => {
     return players
@@ -418,6 +431,13 @@ export function SeekingScreen({
       setActiveTab(tabItems[0]?.key ?? "map");
     }
   }, [activeTab, tabItems]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setUiNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!defs.some((item) => item.key === askCategory)) {
@@ -881,6 +901,22 @@ export function SeekingScreen({
           <Text style={styles.calloutTitle}>Latest answer received</Text>
           <Text style={styles.calloutBody}>{String(latestAnswerData.value ?? "Open Ask to review it.")}</Text>
         </Pressable>
+      ) : null}
+
+      {myActiveCurses.length > 0 ? (
+        <View style={[styles.callout, styles.calloutCurse]}>
+          <Text style={styles.calloutTitle}>Active curse effects</Text>
+          {myActiveCurses.map((curse, index) => {
+            const effect = asRecord(curse.effect);
+            const expiresAtMs = Number(curse.expiresAtMs ?? 0);
+            const remainingMs = Number.isFinite(expiresAtMs) ? Math.max(0, expiresAtMs - uiNowMs) : 0;
+            return (
+              <Text key={String(curse.id ?? index)} style={styles.calloutBody}>
+                {String(curse.sourceTemplateId ?? effect.kind ?? "curse")} | {String(effect.kind ?? "effect")} | {formatCountdownMs(remainingMs)} left
+              </Text>
+            );
+          })}
+        </View>
       ) : null}
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabsRow}>
@@ -1467,6 +1503,10 @@ const styles = StyleSheet.create({
   calloutSeeker: {
     backgroundColor: "#e0eff5",
     borderColor: "#8caec0",
+  },
+  calloutCurse: {
+    backgroundColor: "#fff3df",
+    borderColor: "#d59f3d",
   },
   calloutTitle: {
     fontSize: 12,

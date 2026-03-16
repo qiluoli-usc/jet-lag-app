@@ -7,6 +7,7 @@ import type {
   JoinRoomResponse,
   LeaveRoomResponse,
   LocationUpdateResponse,
+  NextRoundResponse,
   QuestionDefsResponse,
   ReadyResponse,
   RewardChoiceResponse,
@@ -198,6 +199,17 @@ export async function startRound(
   payload: { playerId: string },
 ): Promise<StartRoundResponse> {
   return request<StartRoundResponse>(httpBaseUrl, `/rooms/${encode(code)}/startRound`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function nextRound(
+  httpBaseUrl: string,
+  code: string,
+  payload: { playerId: string },
+): Promise<NextRoundResponse> {
+  return request<NextRoundResponse>(httpBaseUrl, `/rooms/${encode(code)}/next-round`, {
     method: "POST",
     body: JSON.stringify(payload),
   });
