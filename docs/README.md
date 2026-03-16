@@ -30,3 +30,10 @@ This index defines what each product document is for and which one is authoritat
 - New gameplay/API rules: update `SPEC v3` first.
 - Product-level scope updates: then sync `PRD v3`.
 - `PRD v2` remains unchanged as archive.
+
+## Execution Reviews
+
+- `PHASE_1_REASSESSMENT_2026-03-16.md`
+  - Type: Milestone reassessment
+  - Use for: Checking whether Phase 1 is actually complete against code and runnable validation
+  - Rule: Treat this as the latest closure-status note for Phase 1 until the phase tasks and plan are synchronized.

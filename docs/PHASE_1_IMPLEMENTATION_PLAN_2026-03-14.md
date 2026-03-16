@@ -1,49 +1,91 @@
-# Phase 1.6: 前端用户认证 (Mobile Auth UI) Integration
+# Phase 1.6: 前端用户认证（Mobile Auth UI）Integration
 
-## User Review Required
+> 2026-03-16 状态修正：
+> 本文档原本用于规划“移动端认证接入”。
+> 现已补充修正后的验收结论，避免把“认证集成完成”误读成“第一阶段所有相关能力都已完全签收”。
 
-> [!IMPORTANT]
-> **确认需求**：在第一阶段我们完成了**后端**的核心认证功能（JWT、bcrypt、数据库表、`/auth/login` 等 API），但之前为了保证不影响您跑通主流程测试，前端依然是原有的**匿名随时输入名字**模式。
->
-> 现在的方案是：在手机端强制加上 **登录/注册界面**（AuthScreen）。用户必须先注册或登录后，才能进入到原来的首页（HomeScreen）去创建和加入房间。玩家在房间中的名字将直接使用其注册的用户名。请确认这个改动是否符合您的预期！
+## 背景
 
----
+在第一阶段中，后端已经完成了核心认证能力：
 
-## Proposed Changes
+- JWT
+- bcrypt 密码校验
+- 用户表 / 房间表 / 事件表
+- `/auth/register`
+- `/auth/login`
+
+早期为了优先跑通主流程，移动端仍保留了匿名输入名字的模式。
+
+本阶段 1.6 的目标，是在手机端强制加入登录 / 注册流程，使用户必须先认证，再进入首页创建或加入房间，并且房间内玩家身份直接绑定到登录用户。
+
+## 已实现内容
 
 ### 1. 新增认证状态存储层
-#### [NEW] [authSession.ts](file:///e:/Crazy_Project/Jet Lag App/mobile/src/lib/authSession.ts)
-提供基于 `AsyncStorage` 的 JWT 和用户信息本地持久化功能：
-- `saveAuthSession(token, user)`
-- `getAuthSession()`
-- `clearAuthSession()`
 
-### 2. 更新 API 通信层
-#### [MODIFY] [api.ts](file:///e:/Crazy_Project/Jet Lag App/mobile/src/lib/api.ts)
-- 修改基础请求方法 (`request`)，在每次发送请求时自动从 `authSession` 读取 Token，并附加到 HTTP Headers 的 `Authorization: Bearer <token>` 中。
-- 新增 `registerUser(baseUrl, displayName, password)` 和 `loginUser(baseUrl, displayName, password)` 方法。
+- 新增 `authSession.ts`
+- 持久化保存 `token` 与 `user`
+- 应用启动时恢复登录态
 
-### 3. 新增登录/注册 UI
-#### [NEW] [AuthScreen.tsx](file:///e:/Crazy_Project/Jet Lag App/mobile/src/screens/AuthScreen.tsx)
-- 提供“登录”与“注册”切换卡。
-- 输入 `displayName` (用户名) 和 `password` (密码)。
-- 成功后调用 `saveAuthSession` 并触发页面跳转。
+### 2. 更新 API 通信层附加 Token
+
+- 移动端 API 请求支持携带 `Authorization: Bearer <token>`
+- 房间相关读写请求会带上认证信息
+
+### 3. 新增登录 / 注册界面
+
+- 新增 `AuthScreen.tsx`
+- 用户在进入首页前必须先注册或登录
 
 ### 4. 调整应用路由与首页
-#### [MODIFY] [App.tsx](file:///e:/Crazy_Project/Jet Lag App/mobile/App.tsx)
-- 引入全局认证状态管理。
-- 启动时加载 JWT，若无 Token 则停留在 `AuthScreen`，有 Token 则进入 `HomeScreen`。
-#### [MODIFY] [HomeScreen.tsx](file:///e:/Crazy_Project/Jet Lag App/mobile/src/screens/HomeScreen.tsx)
-- 在页面顶部展示当前登录的用户名。
-- 移除手动输入 Player Name 的框（创建/加入房间时将不再需要手动输入，因为后端现在可以通过 Token 直接提取真实用户或由前端直接传递登录的用户名）。
-- 增加一个“注销 (Logout)”按钮。
 
----
+- `App.tsx` 根据认证状态切换 `AuthScreen / HomeScreen / RoomScreen`
+- `HomeScreen.tsx` 使用当前登录用户创建和加入房间
 
-## Verification Plan
+### 5. 房间玩家身份与登录用户绑定
 
-### Manual Verification
-1. 在手机或模拟器上启动 App，预期首先看到 AuthScreen (登录页)。
-2. 创建一个新账号并登录，预期进入 HomeScreen，并且不再需要输入 Player Name。
-3. 创建房间并进入游戏页，验证后端能够根据携带的被认证 Token 正确匹配用户信息，且后台定位和推送通知功能不受影响。
-4. 重启 App，预期自动免密码记住登录状态。
+- 房间内玩家名直接使用已登录用户名
+- 服务端根据 Token 校验玩家归属
+- HTTP 与 WebSocket 均已接入绑定校验
+
+## 修正后的验收结论（2026-03-16）
+
+### 已通过的验收项
+
+1. 启动 App 后，首先进入 `AuthScreen`。
+2. 创建账号并登录后，进入 `HomeScreen`，不再需要手动输入玩家名。
+3. 创建房间并进入游戏后，后端能够根据携带的 Token 正确匹配用户身份。
+4. 重启 App 后，登录态可以自动恢复。
+
+### 需要修正表述的验收项
+
+原文中曾将下面这句话作为整体验收的一部分：
+
+> 创建房间并进入游戏页，验证后端能够根据携带的被认证 Token 正确匹配用户信息，且后台定位和推送通知功能不受影响。
+
+这句话现在需要拆开理解：
+
+- “后端能够根据 Token 正确匹配用户信息”这一项，已经完成。
+- “后台定位和推送通知功能不受影响”这句话，不能直接等同于“相关能力已经全部签收”。
+
+原因是：
+
+- 服务端推送链路已经打通，但 iPhone 端仍需 `development build` + `EAS projectId` 才能完成真实送达验证。
+- iPhone 端后台定位在 `Expo Go` 下仍然会降级为前台模式，尚不能视为真后台定位已完成。
+
+## 当前正确结论
+
+本计划对应的“前端用户认证集成”任务已经完成，并且认证相关主流程已经收口。
+
+但如果把该计划外延理解为“认证接入后，第一阶段相关的后台定位和推送通知也一并全部完成”，这个结论当前并不成立。
+
+截至 2026-03-16，更准确的状态是：
+
+- 认证集成：已完成
+- 房间玩家身份绑定：已完成
+- 服务端推送链路：已完成
+- iPhone 真机推送闭环：未完成
+- iPhone 真后台定位闭环：未完成
+
+详细复核依据见：
+
+- `docs/PHASE_1_REASSESSMENT_2026-03-16.md`
