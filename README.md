@@ -1,241 +1,203 @@
-# Jet Lag App Prototype
+# Jet Lag App
 
-This project is a runnable backend prototype based on your game design notes.
+Jet Lag App is a local multiplayer hide-and-seek prototype with:
 
-## Implemented scope
+- a Node.js HTTP + WebSocket backend
+- a React web client in [`client/`](client/)
+- an Expo React Native client in [`mobile/`](mobile/)
 
-- Room and player management (`Lobby`, join, ready, role assignment).
-- Scale presets (`Small/Medium/Large`) with rule bootstrap.
-- Round state machine (`Hide -> Seek -> EndGame -> Caught -> Summary`).
-- Timer-driven phase transitions.
-- Hiding zone generation at hide-end and EndGame auto trigger when seekers enter zone while off-transit.
-- Role-based information visibility (`Hider`, `Seeker`, `Observer`).
-- Structured question pipeline with one-pending-question lock.
-- Category-based answer time limits/costs and repeat multiplier.
-- Timeout handling: auto pause + no reward if answer is late.
-- Reward draw flow with keep-card selection endpoint.
-- Question cooldown + curse-based category blocking.
-- Seeker map annotation placeholders.
-- Curse-enforced map restrictions (for example `circle_only` drawing mode).
-- Card system includes fixed time bonus / powerups / curses.
-- MVP powerups implemented: `Veto`, `Randomize`, `Discard N Draw M`, `Expand Hand Size`.
-- Dice rolls with replay proof hash.
-- Catch claim + resolve flow (distance mode supports automatic evaluation and requires visual confirmation).
-- Pause/resume controls and dispute workflow.
-- Hider clue sharing after a configurable seek-time threshold.
-- Append-only event log with hash chain.
-- Basic anti-cheat speed anomaly flag.
-- Player capability projection for frontend button locking.
-- V3 unified data-source layer: `MapProviderAdapter` + `TransitPack`.
-- Built-in place legitimacy rule: `review_count >= 5`, with dispute vote override.
-- API compatibility for both legacy `/rooms/...` and spec-style `/api/rooms/...`.
+The current repo is already runnable end-to-end for local development and real-device LAN testing.
 
-## Quick start
+## Current State
 
-```bash
-cd E:\\Crazy_Project\\Jet Lag App
-node src/server.js
-```
+Implemented in the current version:
 
-Default server bind: `0.0.0.0:8080` (LAN/mobile accessible)  
-Override with env: `HOST=0.0.0.0 PORT=9090 node src/server.js`
+- account registration / login with JWT auth
+- room create / join / leave / ready flow
+- authenticated player binding so room/player identity is tied to the logged-in user
+- round flow: `Lobby -> Hiding -> Seeking -> Summary`
+- realtime room sync over WebSocket
+- role-based visibility for `hider / seeker / observer`
+- question / answer flow with pending-question lock
+- reward-card selection after eligible answers
+- card draw / curse cast / dice / catch claim actions
+- location reporting, map markers, polygon drawing, POI search
+- hider / seeker split `Seeking` UI on mobile
+- `Hiding` countdown UI on mobile
+- `Summary` recap UI with timing, timeline, next-round reset, and seeker route map on mobile
+- local persistence for auth session, network settings, and room player sessions
+- push token registration and server-side event-driven push pipeline
 
-HTTP base URL:
+## Repo Layout
 
-- `http://localhost:8080`
-- API alias prefix is also available: `http://localhost:8080/api`
+- [`src/`](src/): backend runtime
+- [`client/`](client/): Vite + React web app
+- [`mobile/`](mobile/): Expo React Native app
+- [`shared/`](shared/): shared protocol/types
+- [`scripts/`](scripts/): smoke/regression scripts
+- [`docs/`](docs/): PRD / spec / implementation notes
 
-Frontend + backend dev (concurrently):
+## Quick Start
 
-```bash
-cd E:\Crazy_Project\Jet Lag App
+Install dependencies:
+
+```powershell
+cd "E:\Crazy_Project\Jet Lag App"
 npm install
 npm --prefix client install
-npm run dev
+npm --prefix mobile install
 ```
 
-Web client now includes the same core round controls as mobile:
+Start backend only:
 
-- Seeking tabs: `Map / Q&A / Cards / Dice / Catch / Log`
-- Foreground location report + POI search + polygon annotation submit
-- Dev-only quick controls in room header: `Next Phase` / `+2 Phases`
-
-Run API + Web + Mobile Expo together:
-
-```bash
-cd E:\Crazy_Project\Jet Lag App
-npm run dev:all
-```
-
-Run API + Android emulator mobile app (recommended for daily testing):
-
-```bash
-cd E:\Crazy_Project\Jet Lag App
-npm run dev:android
-```
-
-If Metro cache causes blank/loading issues:
-
-```bash
-cd E:\Crazy_Project\Jet Lag App
-npm run dev:android:clean
-```
-
-Smoke test:
-
-```bash
-cd E:\Crazy_Project\Jet Lag App
-npm run smoke
-```
-
-Network debug notes:
-
-- Android emulator can access host server via `http://10.0.2.2:8080`.
-- Real device must use your host LAN IP (for example `http://192.168.1.20:8080`).
-- If real device cannot access server, allow Node.js/server port inbound in Windows Firewall.
-
-## Realtime protocol (WebSocket)
-
-WebSocket URL:
-
-- `ws://localhost:8080/ws`
-- Alias path also works: `ws://localhost:8080/api/ws`
-
-Client subscribe payload:
-
-```json
-{
-  "type": "SUBSCRIBE",
-  "roomCode": "ABC123",
-  "sinceCursor": "12"
-}
-```
-
-Server messages:
-
-- `SNAPSHOT { projection, cursor }`
-- `EVENT_APPEND { event, cursor }`
-
-`sinceCursor` replay rule:
-
-1. If `sinceCursor` is omitted: server returns `SNAPSHOT` at current latest cursor, no historical replay.
-2. If `sinceCursor = N`: server returns `SNAPSHOT` at cursor `N`, then replays missing events as `EVENT_APPEND` with cursors `N+1 ... latest`.
-3. `sinceCursor` must be an integer in `[0, currentTotalEvents]`; invalid cursor returns error (`400`).
-
-## CORS and mobile debugging
-
-`src/server.js` now enables CORS for HTTP routes and handles preflight:
-
-- `Access-Control-Allow-Methods: GET,POST,OPTIONS`
-- `Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With`
-- `OPTIONS` returns `204`
-
-By default it allows:
-
-- localhost origins (`localhost`, `127.0.0.1`, `0.0.0.0`)
-- common LAN/mobile debug origins (`10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`)
-
-To explicitly control origins, set:
-
-- `CORS_ALLOW_ORIGIN=http://192.168.1.20:5173,http://localhost:5173`
-- or `CORS_ALLOW_ORIGIN=*` (allow all origins)
-
-## Main endpoints
-
-- `GET /health`
-- `GET /`
-- `GET /transit/packs`
-- `POST /transit/packs/import`
-- `GET /rooms`
-- `POST /rooms`
-- `POST /rooms/:roomId/join`
-- `POST /rooms/:roomId/leave`
-- `POST /rooms/:roomId/ready`
-- `POST /rooms/:roomId/start`
-- `POST /rooms/:roomId/dev/advancePhase` (dev-only; can be disabled with `ENABLE_DEV_PHASE_CONTROL=0`)
-- `POST /rooms/:roomId/location`
-- `POST /rooms/:roomId/transit`
-- `POST /rooms/:roomId/questions`
-- `POST /rooms/:roomId/answers`
-- `POST /rooms/:roomId/rewards/choose`
-- `POST /rooms/:roomId/map-annotations`
-- `POST /rooms/:roomId/cards/draw`
-- `POST /rooms/:roomId/cards/cast`
-- `POST /rooms/:roomId/dice/roll`
-- `POST /rooms/:roomId/clues`
-- `POST /rooms/:roomId/pause`
-- `POST /rooms/:roomId/resume`
-- `POST /rooms/:roomId/disputes`
-- `POST /rooms/:roomId/disputes/:disputeId/vote`
-- `POST /rooms/:roomId/disputes/resolve`
-- `POST /rooms/:roomId/catch-claims`
-- `POST /rooms/:roomId/catch-resolve`
-- `POST /rooms/:roomId/next-round`
-- `POST /rooms/:roomId/places/search`
-- `POST /rooms/:roomId/places/details`
-- `POST /rooms/:roomId/admin-levels/reverse`
-- `POST /rooms/:roomId/evidence/upload-init`
-- `POST /rooms/:roomId/evidence/complete`
-- `GET /rooms/:roomId/events?since=&limit=&playerId=`
-- `GET /rooms/:roomId?playerId=...`
-
-## V3 API aliases
-
-All routes above are also available under `/api/...`.
-
-Examples:
-
-- `POST /api/rooms/:roomId/questions/ask`
-- `POST /api/rooms/:roomId/questions/:askedId/answer`
-- `POST /api/rooms/:roomId/cards/play`
-- `POST /api/rooms/:roomId/catch/claim`
-- `POST /api/rooms/:roomId/catch/:claimId/respond`
-- `POST /api/rooms/:roomId/disputes/:disputeId/vote`
-
-## Mobile (Expo Android)
-
-Start backend server:
-
-```bash
+```powershell
 cd "E:\Crazy_Project\Jet Lag App"
 npm run dev:api
 ```
 
-Start Expo mobile app:
+Start backend + web:
 
-```bash
-cd "E:\Crazy_Project\Jet Lag App\mobile"
-npm install
-$env:EXPO_PUBLIC_API_BASE_URL="http://10.0.2.2:8080"
-npm run android
-```
-
-One-command start (API + Android):
-
-```bash
+```powershell
 cd "E:\Crazy_Project\Jet Lag App"
-npm run dev:android
+npm run dev
 ```
 
-Notes:
+Start backend + web + Expo:
 
-- Android emulator should use `10.0.2.2` to access host machine server.
-- For a physical phone on the same LAN, set `EXPO_PUBLIC_API_BASE_URL` to your host IP (for example `http://192.168.1.20:8080`).
-- Mobile app realtime path is `ws://<api-host>/ws` with `SUBSCRIBE { roomCode, sinceCursor }`.
-- In development build, room header includes `Next Phase` / `+2 Phases` buttons to quickly advance test phases.
-- Web room page also includes `Next Phase` / `+2 Phases` in development mode for fast multi-phase verification.
+```powershell
+cd "E:\Crazy_Project\Jet Lag App"
+npm run dev:all
+```
 
-## Folder architecture
+Default backend bind:
 
-- `src/`: backend runtime (HTTP/WS/state machine/protocol)
-- `scripts/`: automated backend acceptance tests
-- `client/`: web app (Vite + React + TS + Tailwind)
-- `mobile/`: Expo app (React Native + TS)
-- `shared/`: shared cross-platform protocol types (client/mobile)
-- `docs/`: PRD/SPEC and architecture notes
+- `http://0.0.0.0:8080`
+- local debug mirror: `http://localhost:8080`
+- WebSocket: `ws://<host>:8080/ws`
 
-Detailed audit and cleanup notes: `docs/PROJECT_STRUCTURE_CN.md`
+## Web Client
 
-## Docs version index
+Start web client alone:
 
-- Version index and priority rules: `docs/README.md`
+```powershell
+cd "E:\Crazy_Project\Jet Lag App"
+npm run dev:client
+```
+
+Current web app scope:
+
+- create / join room
+- realtime room sync
+- lobby / seeking / summary interaction
+- same round-action API surface as mobile for day-to-day debugging
+
+## Mobile Client
+
+Start Expo:
+
+```powershell
+cd "E:\Crazy_Project\Jet Lag App\mobile"
+npm run start
+```
+
+Current mobile flow:
+
+- `AuthScreen`: register / login
+- `HomeScreen`: create room, join room, network override, logout
+- `LobbyScreen`: ready / start round
+- `HidingScreen`: live hide countdown
+- `SeekingScreen`:
+  - seeker view: `Map / Ask / Catch / Tools / Log`
+  - hider view: `Map / Answer / Rewards / Cards / Tools / Log`
+  - active curse banner
+  - reward-card choice UI
+- `SummaryScreen`:
+  - round timing
+  - route map
+  - event timeline
+  - `Prepare Next Round`
+
+Detailed mobile notes: [mobile/README.md](mobile/README.md)
+
+## LAN / Real Device Setup
+
+For real phones, the backend URL must use your computer's current LAN IP.
+
+Example:
+
+- backend: `http://192.168.0.100:8080`
+- websocket: `ws://192.168.0.100:8080/ws`
+
+Important:
+
+- Expo QR / Metro host can change when your IP changes
+- the mobile app stores manual network overrides in AsyncStorage
+- if the app still points to an old IP, open `Open Dev Settings` in the app and update it
+
+## Expo Go Limitations
+
+The app works in Expo Go for most development flows, but not every native capability is fully testable there.
+
+In Expo Go:
+
+- remote push delivery is not fully supported
+- iPhone background location is not fully supported
+- on iPhone the app now degrades to foreground-only tracking in Expo Go
+
+For full validation of push and iOS background location, use a development build instead of Expo Go.
+
+## Useful Scripts
+
+From repo root:
+
+```powershell
+npm run smoke
+npm run test:task5
+npm run test:task6
+npm run test:task7
+```
+
+Available scripts in [`package.json`](package.json):
+
+- `dev:api`
+- `dev:client`
+- `dev:mobile`
+- `dev`
+- `dev:all`
+- `dev:android`
+- `dev:android:clean`
+- `smoke`
+- `test:task1`
+- `test:task3`
+- `test:task4`
+- `test:task5`
+- `test:task6`
+- `test:task7`
+
+## Backend Notes
+
+Key runtime behavior:
+
+- CORS is enabled for localhost and common LAN debug origins
+- `/api/...` aliases are supported in addition to `/...`
+- WebSocket subscribe path is `/ws`
+- dev phase controls are enabled by default outside production
+
+Common endpoints include:
+
+- `POST /auth/register`
+- `POST /auth/login`
+- `POST /rooms`
+- `POST /rooms/:roomId/join`
+- `GET /rooms/:roomId?playerId=...`
+- `GET /rooms/:roomId/snapshot?playerId=...`
+- `POST /rooms/:roomId/next-round`
+- `POST /rounds/:roomId/{ask|answer|drawCard|castCurse|rollDice|claimCatch}`
+
+## Docs
+
+Primary project notes live in [`docs/`](docs/), especially:
+
+- [docs/README.md](docs/README.md)
+- [docs/PROJECT_STRUCTURE_CN.md](docs/PROJECT_STRUCTURE_CN.md)
+- [docs/PHASE_1_IMPLEMENTATION_PLAN_2026-03-14.md](docs/PHASE_1_IMPLEMENTATION_PLAN_2026-03-14.md)

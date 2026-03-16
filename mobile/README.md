@@ -1,43 +1,104 @@
-# Mobile (Expo + TypeScript)
+# Mobile Client
 
-This folder contains the Expo React Native client for the Jet Lag backend.
+This folder contains the Expo React Native client for Jet Lag App.
 
-## Implemented scope
+## Current Mobile Scope
 
-- HomeScreen: create room + join room (REST API)
-- RoomScreen: HTTP bootstrap + WebSocket subscribe (`SUBSCRIBE`) + reconnect sync
-- RoomScreen dev test controls: `Next Phase` / `+2 Phases` (calls `/rooms/:code/dev/advancePhase`)
-- Back action now calls `POST /rooms/:code/leave` and keeps local player session so rejoin can reuse the same `playerId`
-- LobbyScreen: `ready` / `startRound` controls for mobile-side round startup
-- PhaseRouter: Lobby / Hiding / Seeking / Summary
-- SeekingScreen tabs:
-  - `Map`: `react-native-maps` + player markers + POI search (`/rooms/:code/places/search`) + polygon annotation submit (`/rooms/:code/map-annotations`)
-  - Foreground location report: `expo-location` + `POST /rooms/:code/location` (auto interval in Seeking screen)
-  - `Q&A`: question picker (`/defs/questions`) + `ask` + `answer`
-  - `Cards`: `drawCard` + hand display + `castCurse`
-  - `Dice`: `rollDice`
-  - `Catch`: `claimCatch`
-  - `Log`: realtime event stream
-- Buttons are auto-disabled by `projection.allowedActions` and `projection.capabilities`, with visible disable reason
-- Dev Settings modal: runtime override for `HTTP_BASE_URL` and `WS_BASE_URL` persisted via AsyncStorage
+Implemented in the current version:
 
-## Network base URL strategy
+- authentication: register / login / logout
+- home screen: create room, join room, runtime network override
+- room bootstrap from HTTP snapshot + room projection
+- realtime sync over WebSocket with reconnect
+- local persistence for:
+  - auth session
+  - network settings
+  - room player session
+- phase routing:
+  - `Lobby`
+  - `Hiding`
+  - `Seeking`
+  - `Summary`
 
-Priority order for mobile runtime URL resolution:
+Current phase behavior:
 
-1. Saved override in AsyncStorage (Dev Settings)
-2. `.env` / shell env (`EXPO_PUBLIC_API_BASE_URL`, `EXPO_PUBLIC_WS_BASE_URL`)
-3. `app.config.js` `extra.apiBaseUrl` / `extra.wsBaseUrl`
-4. Default fallback: Android emulator host `http://10.0.2.2:8080` and `ws://10.0.2.2:8080/ws`
+- `Lobby`
+  - ready / cancel ready
+  - start round
+- `Hiding`
+  - live countdown until seek starts
+  - role roster summary
+- `Seeking`
+  - seeker view: `Map / Ask / Catch / Tools / Log`
+  - hider view: `Map / Answer / Rewards / Cards / Tools / Log`
+  - reward-card choice after eligible answers
+  - active curse banner with remaining time
+  - map, location, polygon drawing, POI search
+  - card draw / cast curse / dice / catch claim
+- `Summary`
+  - winner + reason
+  - hide / seek timing
+  - seeker route map
+  - summary timeline
+  - `Prepare Next Round`
 
-### Address rules
+## Start
 
-- Android emulator -> host machine: `http://10.0.2.2:PORT`
-- Physical phone -> host machine: `http://<your-lan-ip>:PORT` (for example `http://192.168.1.20:8080`)
+From repo root, start backend first:
 
-## Environment examples
+```powershell
+cd "E:\Crazy_Project\Jet Lag App"
+npm run dev:api
+```
 
-Copy `.env.example` to `.env` and adjust:
+Then start Expo:
+
+```powershell
+cd "E:\Crazy_Project\Jet Lag App\mobile"
+npm install
+npm run start
+```
+
+Other scripts:
+
+```powershell
+npm run ios
+npm run android
+npm run web
+```
+
+## Network Configuration
+
+The app resolves backend addresses in this order:
+
+1. saved override in AsyncStorage
+2. `EXPO_PUBLIC_API_BASE_URL` / `EXPO_PUBLIC_WS_BASE_URL`
+3. values injected from `app.config.js`
+4. default Android emulator fallback `10.0.2.2:8080`
+
+This is why the app can keep pointing to an old IP even after your computer's LAN IP changes.
+
+If room creation or login suddenly times out:
+
+1. open `Open Dev Settings` in the app
+2. update `HTTP` and `WS` to your computer's current LAN IP
+3. save and retry
+
+Example for a real phone on LAN:
+
+- `HTTP`: `http://192.168.0.100:8080`
+- `WS`: `ws://192.168.0.100:8080/ws`
+
+Example for Android emulator:
+
+- `HTTP`: `http://10.0.2.2:8080`
+- `WS`: `ws://10.0.2.2:8080/ws`
+
+## Environment Example
+
+See [.env.example](.env.example)
+
+Typical local values:
 
 ```bash
 EXPO_PUBLIC_SERVER_PORT=8080
@@ -45,62 +106,90 @@ EXPO_PUBLIC_API_BASE_URL=http://10.0.2.2:8080
 EXPO_PUBLIC_WS_BASE_URL=ws://10.0.2.2:8080/ws
 ```
 
-## Start backend server
+## Expo Go vs Development Build
 
-From project root:
+Expo Go is fine for most UI and gameplay iteration, but there are important limits.
 
-```bash
-cd "E:\Crazy_Project\Jet Lag App"
-npm run dev:api
-```
+In Expo Go:
 
-## Start mobile app (Android)
+- remote push notifications are not fully supported
+- iPhone background location is not fully supported
+- the app falls back to foreground-only tracking on iPhone
 
-```bash
-cd "E:\Crazy_Project\Jet Lag App\mobile"
-npm install
-npx expo install expo-location react-native-maps
-npm run android
-```
+Use a development build when you need to verify:
 
-Or from project root in one command:
+- real remote push delivery
+- iOS background location
+- native permission behavior closer to production
 
-```bash
-cd "E:\Crazy_Project\Jet Lag App"
-npm run dev:android
-```
+## iOS / Android Notes
 
-In development mode, use `Dev Settings` inside app to switch emulator URL and LAN IP URL.
+iOS config currently includes:
 
-When the app first enters Seeking screen, allow foreground location permission.
+- background location mode
+- remote-notification background mode
+- required `NSLocation*UsageDescription` keys
 
-## Realtime + projection sync
+Android config currently requests:
 
-RoomScreen synchronizes from both sources:
+- `ACCESS_BACKGROUND_LOCATION`
 
-1. `GET /rooms/:code/snapshot`
-2. `GET /rooms/:code?playerId=...` (full projection with `allowedActions/capabilities/hand`)
-3. Open WS: `<WS_BASE_URL>` and send:
+## Realtime Flow
 
-```json
-{
-  "type": "SUBSCRIBE",
-  "roomCode": "ABC123",
-  "sinceCursor": "<snapshot.cursor>"
-}
-```
+Room sync uses both REST and WebSocket:
 
-4. Apply `SNAPSHOT` / `EVENT_APPEND`, then refresh room projection for capability-correct action gating.
+1. `GET /rooms/:code/snapshot?playerId=...`
+2. `GET /rooms/:code?playerId=...`
+3. open `ws://<host>:8080/ws`
+4. send `SUBSCRIBE { roomCode, playerId, sinceCursor, token }`
+5. merge `SNAPSHOT` and `EVENT_APPEND`
 
-## Main action endpoints used by mobile
+The app refreshes room projection after action execution so role/capability gating stays accurate.
 
+## Main Mobile API Usage
+
+Endpoints used directly by the app include:
+
+- `POST /auth/register`
+- `POST /auth/login`
+- `POST /rooms`
+- `POST /rooms/:code/join`
+- `POST /rooms/:code/leave`
+- `POST /rooms/:code/ready`
+- `POST /rooms/:code/startRound`
+- `POST /rooms/:code/next-round`
+- `POST /rooms/:code/location`
+- `POST /rooms/:code/places/search`
+- `POST /rooms/:code/map-annotations`
+- `POST /rooms/:code/rewards/choose`
 - `POST /rounds/:id/ask`
 - `POST /rounds/:id/answer`
 - `POST /rounds/:id/drawCard`
 - `POST /rounds/:id/castCurse`
 - `POST /rounds/:id/rollDice`
 - `POST /rounds/:id/claimCatch`
-- `POST /rooms/:code/location`
-- `POST /rooms/:code/places/search`
-- `POST /rooms/:code/map-annotations`
-- `POST /rooms/:code/dev/advancePhase` (dev helper)
+
+## Debug Notes
+
+Development helpers currently available in the room header:
+
+- `Next Phase`
+- `+2 Phases`
+- `Refresh`
+
+Useful when validating:
+
+- hiding -> seeking transition
+- summary generation
+- next-round reset back to lobby
+
+## Tech Stack
+
+- Expo SDK 54
+- React Native 0.81
+- React 19
+- TypeScript
+- `react-native-maps`
+- `expo-location`
+- `expo-task-manager`
+- `expo-notifications`
