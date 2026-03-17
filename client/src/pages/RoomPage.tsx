@@ -3,15 +3,19 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { Link, useParams } from "react-router-dom";
 import {
   debugAdvancePhase,
+  fetchTransitPacks,
   fetchQuestionDefs,
   fetchRoomView,
   fetchSnapshot,
   joinRoom,
   leaveRoom,
+  nextRound,
   performRoundAction,
   setReady,
   startRound,
+  updateRoomConfig,
 } from "../lib/api";
+import { getAuthSession } from "../lib/authSession";
 import { getProjectionPlayers, normalizeProjection } from "../lib/projection";
 import { deriveCountdownTarget, normalizePhase, phaseLabel } from "../lib/phase";
 import { PhaseRouter } from "../components/PhaseRouter";
@@ -22,6 +26,7 @@ import type {
   RoomEvent,
   RoomProjection,
   RoundAction,
+  TransitPackSummary,
   WsServerMessage,
 } from "../types";
 
@@ -66,6 +71,14 @@ function mergeProjection(base: RoomProjection | null, incoming: RoomProjection |
     };
   }
 
+  if (incoming.phase) {
+    merged.phase = incoming.phase;
+    merged.round = {
+      ...(merged.round ?? {}),
+      phase: incoming.phase,
+    };
+  }
+
   return normalizeProjection(merged);
 }
 
@@ -75,11 +88,11 @@ export function RoomPage() {
 
   const [projection, setProjection] = useState<RoomProjection | null>(null);
   const [events, setEvents] = useState<RoomEvent[]>([]);
-  const [cursor, setCursor] = useState("0");
   const cursorRef = useRef("0");
   const refreshTimerRef = useRef<number | null>(null);
 
   const [questionDefs, setQuestionDefs] = useState<QuestionDef[]>([]);
+  const [transitPacks, setTransitPacks] = useState<TransitPackSummary[]>([]);
 
   const [wsState, setWsState] = useState<"connecting" | "open" | "closed" | "error">("closed");
   const [error, setError] = useState<string | null>(null);
@@ -90,10 +103,10 @@ export function RoomPage() {
   const [role, setRole] = useState<JoinRole>("seeker");
 
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const authSession = useMemo(() => getAuthSession(), []);
 
   const setCursorState = useCallback((nextCursor: string) => {
     cursorRef.current = nextCursor;
-    setCursor(nextCursor);
   }, []);
 
   useEffect(() => {
@@ -111,20 +124,29 @@ export function RoomPage() {
   }, []);
 
   useEffect(() => {
+    if (authSession?.user?.displayName) {
+      setPlayerName(authSession.user.displayName);
+    }
+  }, [authSession]);
+
+  useEffect(() => {
     let active = true;
 
     const loadQuestionDefs = async () => {
       try {
         const response = await fetchQuestionDefs();
+        const transit = await fetchTransitPacks();
         if (!active) {
           return;
         }
         setQuestionDefs(Array.isArray(response.defs) ? response.defs : []);
+        setTransitPacks(Array.isArray(transit.packs) ? transit.packs : []);
       } catch {
         if (!active) {
           return;
         }
         setQuestionDefs([]);
+        setTransitPacks([]);
       }
     };
 
@@ -225,17 +247,18 @@ export function RoomPage() {
       setWsState("connecting");
       socket = new WebSocket(wsUrl);
 
-      socket.onopen = () => {
-        if (stopped || !socket) {
-          return;
-        }
-        setWsState("open");
+        socket.onopen = () => {
+          if (stopped || !socket) {
+            return;
+          }
+          setWsState("open");
         socket.send(
           JSON.stringify({
             type: "SUBSCRIBE",
             roomCode,
             playerId,
             sinceCursor: cursorRef.current,
+            token: authSession?.token ?? null,
           }),
         );
       };
@@ -296,7 +319,7 @@ export function RoomPage() {
         socket.close();
       }
     };
-  }, [roomCode, playerId, scheduleRefreshProjection, setCursorState]);
+  }, [authSession?.token, roomCode, playerId, scheduleRefreshProjection, setCursorState]);
 
   const normalizedPhase = useMemo<FrontPhase>(() => normalizePhase(projection?.phase), [projection?.phase]);
   const phaseText = useMemo(() => phaseLabel(normalizedPhase), [normalizedPhase]);
@@ -308,6 +331,10 @@ export function RoomPage() {
   const players = useMemo(() => getProjectionPlayers(projection), [projection]);
   const me = useMemo(() => players.find((item) => item.id === playerId) ?? null, [players, playerId]);
   const isReady = Boolean(me?.ready);
+  const waitingForOthers = Boolean(projection?.viewerPreparedNextRound) && Boolean(projection?.waitingForNextRound);
+  const nextRoundReadyCount = Array.isArray(projection?.nextRoundReadyPlayerIds)
+    ? projection.nextRoundReadyPlayerIds.length
+    : players.filter((player) => Boolean(player.nextRoundReady)).length;
 
   const onJoin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -394,6 +421,47 @@ export function RoomPage() {
     }
   };
 
+  const onPrepareNextRound = useCallback(async () => {
+    if (!roomCode || !playerId) {
+      return;
+    }
+    setBusyAction("nextRound");
+    setError(null);
+    try {
+      await nextRound(roomCode, { playerId });
+      await refreshAll();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Prepare next round failed");
+    } finally {
+      setBusyAction(null);
+    }
+  }, [playerId, refreshAll, roomCode]);
+
+  const onUpdateRoomConfig = useCallback(async (payload: {
+    transitPackId?: string | null;
+    borderPolygonGeoJSON?: Record<string, unknown> | null;
+    hidingAreaGeoJSON?: Record<string, unknown> | null;
+  }) => {
+    if (!roomCode || !playerId) {
+      setError("Join room first");
+      return;
+    }
+    setBusyAction("config");
+    setError(null);
+    try {
+      await updateRoomConfig(roomCode, {
+        playerId,
+        ...payload,
+      });
+      await refreshAll();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Config update failed");
+      throw caught;
+    } finally {
+      setBusyAction(null);
+    }
+  }, [playerId, refreshAll, roomCode]);
+
   const onPerformRoundAction = useCallback(async (action: RoundAction, payload: Record<string, unknown>) => {
     if (!roomCode || !playerId) {
       setError("Join room first");
@@ -467,7 +535,7 @@ export function RoomPage() {
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                disabled={Boolean(busyAction)}
+                disabled={Boolean(busyAction) || waitingForOthers}
                 onClick={onToggleReady}
                 className="rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-white transition enabled:hover:brightness-95 disabled:opacity-55"
               >
@@ -475,7 +543,7 @@ export function RoomPage() {
               </button>
               <button
                 type="button"
-                disabled={Boolean(busyAction)}
+                disabled={Boolean(busyAction) || waitingForOthers}
                 onClick={onStartRound}
                 className="rounded-lg border border-black/20 bg-white px-3 py-2 text-sm font-semibold transition hover:bg-black hover:text-white disabled:opacity-55"
               >
@@ -539,6 +607,11 @@ export function RoomPage() {
         }
         main={
           <div className="space-y-4">
+            {waitingForOthers ? (
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+                Next round is waiting for the remaining players. Lobby controls stay read-only until everyone also clicks Prepare Next Round.
+              </div>
+            ) : null}
             <PhaseRouter
               phase={normalizedPhase}
               countdown={countdown}
@@ -550,23 +623,29 @@ export function RoomPage() {
               playerId={playerId}
               busyAction={busyAction}
               questionDefs={questionDefs}
+              transitPacks={transitPacks}
               onRefreshProjection={refreshAll}
               onPerformRoundAction={onPerformRoundAction}
+              onUpdateRoomConfig={onUpdateRoomConfig}
+              onPrepareNextRound={onPrepareNextRound}
             />
             <div className="rounded-xl border border-black/10 bg-surface p-4">
               <p className="font-mono text-xs uppercase tracking-[0.24em] text-black/50">Projection Stats</p>
               <div className="mt-3 grid gap-3 text-sm md:grid-cols-2">
                 <p>
-                  Cursor: <span className="font-mono font-semibold">{cursor}</span>
+                  WS State: <span className="font-mono font-semibold">{wsState}</span>
                 </p>
                 <p>
-                  Total Events: <span className="font-mono font-semibold">{projection?.counters?.total ?? events.length}</span>
+                  Visible Events: <span className="font-mono font-semibold">{events.length}</span>
                 </p>
                 <p>
                   Round: <span className="font-mono font-semibold">{projection?.round?.number ?? projection?.roundNumber ?? "-"}</span>
                 </p>
                 <p>
                   Pending Q: <span className="font-mono font-semibold">{projection?.round?.pendingQuestion?.id ?? projection?.pendingQuestionId ?? "-"}</span>
+                </p>
+                <p>
+                  Next Round Ready: <span className="font-mono font-semibold">{nextRoundReadyCount}/{players.length}</span>
                 </p>
               </div>
             </div>

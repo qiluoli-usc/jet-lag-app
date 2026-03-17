@@ -120,15 +120,27 @@ function buildNotificationForEvent(room, event) {
         data: { type: event.type, roomId: room.id, clueId: event.data?.id ?? null },
       };
     case "card.cast": {
-      const targetPlayerId = String(event.data?.targetPlayerId ?? "").trim();
-      if (!targetPlayerId) {
+      const targetPlayerIds = Array.isArray(event.data?.targetPlayerIds)
+        ? event.data.targetPlayerIds.map((item) => String(item ?? "").trim()).filter(Boolean)
+        : [];
+      const fallbackTargetPlayerId = String(event.data?.targetPlayerId ?? "").trim();
+      const playerIds = uniqueValues([
+        ...targetPlayerIds,
+        ...(fallbackTargetPlayerId ? [fallbackTargetPlayerId] : []),
+      ]);
+      if (playerIds.length === 0) {
         return null;
       }
       return {
-        playerIds: [targetPlayerId],
+        playerIds,
         title: "Curse applied",
         body: `${actorName} cast a card on you.`,
-        data: { type: event.type, roomId: room.id, targetPlayerId },
+        data: {
+          type: event.type,
+          roomId: room.id,
+          targetPlayerId: fallbackTargetPlayerId || null,
+          targetPlayerIds: playerIds,
+        },
       };
     }
     case "catch.claimed": {

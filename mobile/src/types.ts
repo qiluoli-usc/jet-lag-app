@@ -12,6 +12,8 @@ export type ScreenPhase = SharedScreenPhase;
 
 export type RoomEvent = SharedRoomEvent;
 
+export type MapProvider = "GOOGLE" | "MAPBOX" | "AMAP" | "CUSTOM";
+
 export type RoundAction =
   | "ask"
   | "answer"
@@ -80,18 +82,71 @@ export interface ProjectionRound {
   [key: string]: unknown;
 }
 
+export interface ProjectionEvidence {
+  evidenceId?: string;
+  roundNumber?: number;
+  actorPlayerId?: string;
+  type?: string;
+  mimeType?: string | null;
+  status?: string;
+  metadata?: Record<string, unknown> | null;
+  uploadUrl?: string | null;
+  viewUrl?: string | null;
+  fileName?: string | null;
+  storageKey?: string | null;
+  createdAt?: string;
+  completedAt?: string | null;
+  sizeBytes?: number | null;
+  [key: string]: unknown;
+}
+
+export interface ProjectionDispute {
+  id?: string;
+  type?: string;
+  status?: string;
+  votePolicy?: string;
+  requiredVoterIds?: string[];
+  votes?: Record<string, string>;
+  createdBy?: string;
+  roundNumber?: number;
+  createdAt?: string;
+  description?: string;
+  payload?: Record<string, unknown> | null;
+  resolution?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
+export interface ProjectionMessage {
+  id?: string;
+  messageId?: string;
+  kind?: string;
+  playerId?: string | null;
+  playerName?: string | null;
+  text?: string;
+  roundNumber?: number;
+  createdAt?: string;
+  metadata?: Record<string, unknown> | null;
+  [key: string]: unknown;
+}
+
 export interface Projection {
   roomId?: string | null;
   id?: string;
   code?: string;
   name?: string;
   phase?: string;
+  mapProvider?: MapProvider | string | null;
+  transitPackId?: string | null;
+  config?: Record<string, unknown> | null;
   round?: ProjectionRound;
   paused?: boolean | Record<string, unknown>;
   summary?: Record<string, unknown> | null;
   hand?: Array<Record<string, unknown>>;
   players?: ProjectionPlayer[] | Record<string, unknown>;
   mapAnnotations?: ProjectionMapAnnotation[];
+  disputes?: ProjectionDispute[] | Record<string, unknown>;
+  evidence?: ProjectionEvidence[] | Record<string, unknown>;
+  messages?: ProjectionMessage[] | Record<string, unknown>;
   capabilities?: Record<string, unknown>;
   allowedActions?: string[];
   counters?: {
@@ -108,6 +163,8 @@ export interface CreateRoomResponse {
   room: {
     id: string;
     code?: string;
+    mapProvider?: MapProvider | string | null;
+    transitPackId?: string | null;
   };
 }
 
@@ -162,6 +219,41 @@ export interface SearchPlacesResponse {
   };
 }
 
+export interface PlaceDetailsResponse {
+  place: {
+    mapProvider?: string;
+    details?: Record<string, unknown> | null;
+    legitimacy?: Record<string, unknown> | null;
+  };
+}
+
+export interface ReverseAdminLevelsResponse {
+  admin: {
+    mapProvider?: string;
+    lat?: number;
+    lng?: number;
+    adminLevels?: Record<string, unknown> | null;
+  };
+}
+
+export interface TransitPackSummary {
+  packId: string;
+  sourceType?: string;
+  name?: string;
+  city?: string;
+  version?: string;
+  stopCount?: number;
+  routeCount?: number;
+}
+
+export interface TransitPackListResponse {
+  packs: TransitPackSummary[];
+}
+
+export interface UpdateRoomConfigResponse {
+  room: Projection;
+}
+
 export interface AddMapAnnotationResponse {
   annotation: Record<string, unknown>;
 }
@@ -172,6 +264,37 @@ export interface RewardChoiceResponse {
     discardedCardIds?: string[];
     [key: string]: unknown;
   };
+}
+
+export interface EvidenceUploadInitResponse {
+  upload: {
+    evidenceId: string;
+    uploadUrl: string;
+    expiresAt: string;
+  };
+}
+
+export interface EvidenceUploadBinaryResponse {
+  upload: {
+    storageKey: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    viewUrl: string;
+  };
+}
+
+export interface EvidenceCompleteResponse {
+  evidence: ProjectionEvidence;
+}
+
+export interface DisputeResponse {
+  dispute: ProjectionDispute | Record<string, unknown>;
+  status?: string;
+}
+
+export interface MessageResponse {
+  message: ProjectionMessage | Record<string, unknown>;
 }
 
 export interface ActionResponse {

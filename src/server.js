@@ -3,6 +3,7 @@ import "./db/db.js";  // initialize database on startup
 import { registerUser, loginUser } from "./auth/auth.js";
 import { extractUser, requireAuth } from "./auth/authMiddleware.js";
 import { applyAuthenticatedJoinInput, authorizePlayerIdentity, getRoomPlayer } from "./auth/playerIdentity.js";
+import { readEvidenceBinary, storeEvidenceBinary } from "./evidence/storage.js";
 import { attachRoomEventNotifications, savePushToken } from "./notifications/notificationService.js";
 import { URL } from "node:url";
 import {
@@ -17,6 +18,7 @@ import {
   getRoom,
   getRoomEvents,
   getRoomPlaceDetails,
+  getEvidenceUploadRecord,
   initEvidenceUpload,
   importCustomTransitPack,
   joinRoom,
@@ -26,6 +28,7 @@ import {
   manualStartRound,
   nextRound,
   pauseRound,
+  postChatMessage,
   postClue,
   projectRoom,
   reverseRoomAdminLevels,
@@ -43,6 +46,7 @@ import {
   voteDispute,
   completeEvidenceUpload,
   debugAdvancePhase,
+  updateRoomConfig,
 } from "./game/stateMachine.js";
 import { RoundAction } from "./realtime/events.js";
 import { ensureRoomCode, getRoomSnapshot, resolveRoomId } from "./game/store.js";
@@ -145,8 +149,8 @@ function resolveCorsOrigin(origin) {
 function applyCors(req, res) {
   const allowedOrigin = resolveCorsOrigin(req.headers.origin);
   res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With, X-Upload-Filename");
   res.setHeader("Access-Control-Max-Age", "86400");
   res.setHeader("Vary", "Origin");
 }
@@ -233,6 +237,14 @@ function normalizePathname(pathname) {
   return pathname;
 }
 
+async function readRequestBuffer(req) {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return chunks.length > 0 ? Buffer.concat(chunks) : Buffer.alloc(0);
+}
+
 async function handleRequest(req, res) {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
   const pathname = normalizePathname(url.pathname);
@@ -264,6 +276,57 @@ async function handleRequest(req, res) {
     }
     savePushToken(playerId, token, platform);
     return sendJson(res, 200, { ok: true });
+  }
+
+  const uploadId = extractScopedId(pathname, "uploads");
+  if (uploadId && req.method === "PUT") {
+    const record = getEvidenceUploadRecord(uploadId);
+    if (!record) {
+      return badRequest(res, 404, `Evidence not found: ${uploadId}`);
+    }
+    if (record.evidence.status !== "pending_upload") {
+      return badRequest(res, 400, "Evidence upload is not pending");
+    }
+    const expiresAtMs = Date.parse(String(record.evidence.expiresAt ?? ""));
+    if (Number.isFinite(expiresAtMs) && expiresAtMs < Date.now()) {
+      return badRequest(res, 410, "Evidence upload URL expired");
+    }
+
+    const payload = await readRequestBuffer(req);
+    if (payload.byteLength === 0) {
+      return badRequest(res, 400, "Upload body is empty");
+    }
+
+    const fileNameHeader = typeof req.headers["x-upload-filename"] === "string"
+      ? decodeURIComponent(req.headers["x-upload-filename"])
+      : null;
+    const stored = await storeEvidenceBinary(record.evidence, payload, {
+      mimeType: req.headers["content-type"],
+      fileName: fileNameHeader ?? record.evidence.fileName ?? record.evidence.evidenceId,
+    });
+    return sendJson(res, 200, { upload: stored });
+  }
+  if (uploadId && req.method === "GET") {
+    const record = getEvidenceUploadRecord(uploadId);
+    if (!record) {
+      return badRequest(res, 404, `Evidence not found: ${uploadId}`);
+    }
+    if (record.evidence.status !== "completed" || !record.evidence.storageKey) {
+      return badRequest(res, 404, "Evidence file is not available yet");
+    }
+
+    const file = await readEvidenceBinary(record.evidence.storageKey);
+    const mimeType = String(record.evidence.mimeType ?? "application/octet-stream");
+    const fileName = String(record.evidence.fileName ?? `${record.evidence.evidenceId}`).replace(/["\r\n]+/g, "_");
+
+    res.writeHead(200, {
+      "Content-Type": mimeType,
+      "Content-Length": file.buffer.byteLength,
+      "Content-Disposition": `inline; filename="${fileName}"`,
+      "Cache-Control": "no-store",
+    });
+    res.end(file.buffer);
+    return;
   }
 
   // ── Optional auth enforcement ──────────────────────────────────
@@ -436,6 +499,9 @@ async function handleRequest(req, res) {
     const state = manualStartRound(roomId, body);
     return sendJson(res, 200, { state: { ...state, phase: toApiPhase(state.phase) } });
   }
+  if (req.method === "POST" && suffix === "config") {
+    return sendJson(res, 200, { room: updateRoomConfig(roomId, body) });
+  }
   if (req.method === "POST" && suffix === "dev/advancePhase") {
     if (!DEV_PHASE_CONTROL_ENABLED) {
       return badRequest(res, 403, "Dev phase controls are disabled (set ENABLE_DEV_PHASE_CONTROL=1)");
@@ -494,6 +560,9 @@ async function handleRequest(req, res) {
   }
   if (req.method === "POST" && suffix === "clues") {
     return sendJson(res, 201, { clue: postClue(roomId, body) });
+  }
+  if (req.method === "POST" && suffix === "messages") {
+    return sendJson(res, 201, { message: postChatMessage(roomId, body) });
   }
   if (req.method === "POST" && suffix === "pause") {
     return sendJson(res, 200, { pause: pauseRound(roomId, body) });

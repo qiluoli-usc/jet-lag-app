@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -8,12 +8,12 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { createRoom, joinRoom } from "../lib/api";
+import { createRoom, fetchTransitPacks, joinRoom } from "../lib/api";
 import { clearAllPlayerSessions, clearPlayerSession, getPlayerSession, savePlayerSession } from "../lib/playerSession";
 import { clearAuthSession, type AuthSession } from "../lib/authSession";
 import type { NetworkConfigSource } from "../lib/config";
 import { stopBackgroundTracking } from "../lib/locationTracking";
-import type { Role } from "../types";
+import type { Role, TransitPackSummary } from "../types";
 
 interface HomeScreenProps {
   httpBaseUrl: string;
@@ -43,8 +43,47 @@ export function HomeScreen({
   const [joinCode, setJoinCode] = useState("");
   const [createRole, setCreateRole] = useState<Role>("seeker");
   const [joinRole, setJoinRole] = useState<Role>("seeker");
+  const [createTransitPackId, setCreateTransitPackId] = useState("");
+  const [transitPacks, setTransitPacks] = useState<TransitPackSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTransitPacks = async () => {
+      try {
+        const response = await fetchTransitPacks(httpBaseUrl);
+        if (cancelled) {
+          return;
+        }
+
+        const packs = Array.isArray(response.packs) ? response.packs : [];
+        setTransitPacks(packs);
+        setCreateTransitPackId((current) => {
+          if (current && packs.some((item) => item.packId === current)) {
+            return current;
+          }
+          return packs[0]?.packId ?? "";
+        });
+      } catch {
+        if (!cancelled) {
+          setTransitPacks([]);
+        }
+      }
+    };
+
+    void loadTransitPacks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [httpBaseUrl]);
+
+  const selectedTransitPack = useMemo(
+    () => transitPacks.find((item) => item.packId === createTransitPackId) ?? null,
+    [createTransitPackId, transitPacks],
+  );
 
   const handleLogout = async () => {
     await stopBackgroundTracking();
@@ -58,7 +97,10 @@ export function HomeScreen({
     setError(null);
 
     try {
-      const created = await createRoom(httpBaseUrl, roomName.trim() || "Mobile Room");
+      const created = await createRoom(httpBaseUrl, {
+        name: roomName.trim() || "Mobile Room",
+        transitPackId: createTransitPackId || undefined,
+      });
       const code = String(created.code ?? created.room?.code ?? "").trim().toUpperCase();
       if (!code) {
         throw new Error("Server did not return room code");
@@ -173,6 +215,40 @@ export function HomeScreen({
             );
           })}
         </View>
+        <Text style={styles.helperText}>
+          POI lookup provider is now chosen automatically from player location and the room's transit context. You only need to pick a transit pack here.
+        </Text>
+
+        <Text style={styles.sectionTitle}>Transit Pack</Text>
+        {transitPacks.length === 0 ? (
+          <Text style={styles.helperText}>No transit pack list loaded. Server default will be used.</Text>
+        ) : (
+          <View style={styles.stackList}>
+            {transitPacks.map((pack) => {
+              const active = createTransitPackId === pack.packId;
+              return (
+                <Pressable
+                  key={pack.packId}
+                  style={[styles.packButton, active ? styles.packButtonActive : null]}
+                  onPress={() => setCreateTransitPackId(pack.packId)}
+                >
+                  <Text style={[styles.packButtonTitle, active ? styles.choiceButtonTextActive : null]}>
+                    {pack.name ?? pack.packId}
+                  </Text>
+                  <Text style={styles.packButtonMeta}>
+                    {(pack.city ?? "Unknown city")}{pack.stopCount ? ` · ${pack.stopCount} stops` : ""}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
+
+        {selectedTransitPack ? (
+          <Text style={styles.helperText}>
+            Selected transit pack: {selectedTransitPack.name ?? selectedTransitPack.packId}
+          </Text>
+        ) : null}
 
         <Pressable style={styles.primaryButton} onPress={handleCreateRoom} disabled={busy}>
           <Text style={styles.primaryButtonText}>Create And Join</Text>
@@ -307,6 +383,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     gap: 8,
   },
+  optionWrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
   roleButton: {
     flex: 1,
     borderWidth: 1,
@@ -327,6 +408,57 @@ const styles = StyleSheet.create({
   },
   roleButtonTextActive: {
     color: "#0a5f66",
+  },
+  choiceButton: {
+    minWidth: 84,
+    borderWidth: 1,
+    borderColor: "#d2d0c8",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    alignItems: "center",
+    backgroundColor: "#f4f3ee",
+  },
+  choiceButtonActive: {
+    borderColor: "#0a5f66",
+    backgroundColor: "#d7eef0",
+  },
+  choiceButtonText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#666666",
+  },
+  choiceButtonTextActive: {
+    color: "#0a5f66",
+  },
+  stackList: {
+    gap: 8,
+  },
+  packButton: {
+    borderWidth: 1,
+    borderColor: "#d2d0c8",
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#f4f3ee",
+    gap: 2,
+  },
+  packButtonActive: {
+    borderColor: "#0a5f66",
+    backgroundColor: "#d7eef0",
+  },
+  packButtonTitle: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1f1f1f",
+  },
+  packButtonMeta: {
+    fontSize: 11,
+    color: "#666666",
+  },
+  helperText: {
+    fontSize: 12,
+    color: "#5e5e5e",
   },
   primaryButton: {
     marginTop: 4,

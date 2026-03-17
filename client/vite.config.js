@@ -9,9 +9,12 @@ export default defineConfig({
         port: 5173,
         proxy: {
             "/health": backendOrigin,
+            "/auth": backendOrigin,
             "/defs": backendOrigin,
             "/rooms": backendOrigin,
             "/rounds": backendOrigin,
+            "/transit": backendOrigin,
+            "/uploads": backendOrigin,
             "/api": backendOrigin,
             "/ws": {
                 target: backendOrigin,

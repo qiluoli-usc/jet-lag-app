@@ -9,6 +9,7 @@ import {
 } from "react-native";
 import {
   debugAdvancePhase,
+  fetchTransitPacks,
   fetchQuestionDefs,
   fetchRoomView,
   fetchSnapshot,
@@ -17,6 +18,7 @@ import {
   performRoundAction,
   setReady,
   startRound,
+  updateRoomConfig,
 } from "../lib/api";
 import { getAuthSession } from "../lib/authSession";
 import { applyEventToProjection, getProjectionPlayers, normalizeProjection } from "../lib/projection";
@@ -27,6 +29,7 @@ import type {
   Role,
   RoomEvent,
   RoundAction,
+  TransitPackSummary,
   WsMessage,
 } from "../types";
 
@@ -75,6 +78,14 @@ function mergeProjection(base: Projection | null, incoming: Projection | null | 
     };
   }
 
+  if (incoming.phase) {
+    merged.phase = incoming.phase;
+    merged.round = {
+      ...(merged.round ?? {}),
+      phase: incoming.phase,
+    };
+  }
+
   return normalizeProjection(merged);
 }
 
@@ -92,6 +103,7 @@ export function RoomScreen({
   const cursorRef = useRef("0");
 
   const [questionDefs, setQuestionDefs] = useState<QuestionDef[]>([]);
+  const [transitPacks, setTransitPacks] = useState<TransitPackSummary[]>([]);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -143,11 +155,21 @@ export function RoomScreen({
     const init = async () => {
       try {
         await refreshAll();
-        try {
-          const defsResponse = await fetchQuestionDefs(httpBaseUrl);
-          setQuestionDefs(Array.isArray(defsResponse.defs) ? defsResponse.defs : []);
-        } catch {
+        const [defsResult, transitResult] = await Promise.allSettled([
+          fetchQuestionDefs(httpBaseUrl),
+          fetchTransitPacks(httpBaseUrl),
+        ]);
+
+        if (defsResult.status === "fulfilled") {
+          setQuestionDefs(Array.isArray(defsResult.value.defs) ? defsResult.value.defs : []);
+        } else {
           setQuestionDefs([]);
+        }
+
+        if (transitResult.status === "fulfilled") {
+          setTransitPacks(Array.isArray(transitResult.value.packs) ? transitResult.value.packs : []);
+        } else {
+          setTransitPacks([]);
         }
         setLoading(false);
       } catch (caught) {
@@ -330,6 +352,31 @@ export function RoomScreen({
     }
   }, [httpBaseUrl, playerId, refreshAll, roomCode]);
 
+  const handleUpdateRoomConfig = useCallback(async (
+    payload: {
+      transitPackId?: string | null;
+      borderPolygonGeoJSON?: Record<string, unknown> | null;
+      hidingAreaGeoJSON?: Record<string, unknown> | null;
+    },
+  ) => {
+    setBusyAction("config");
+    setError(null);
+    try {
+      const result = await updateRoomConfig(httpBaseUrl, roomCode, {
+        playerId,
+        transitPackId: payload.transitPackId,
+        borderPolygonGeoJSON: payload.borderPolygonGeoJSON,
+        hidingAreaGeoJSON: payload.hidingAreaGeoJSON,
+      });
+      setProjection((prev) => mergeProjection(prev, result.room));
+      scheduleProjectionRefresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "config update failed");
+    } finally {
+      setBusyAction(null);
+    }
+  }, [httpBaseUrl, playerId, roomCode, scheduleProjectionRefresh]);
+
   const handleBackPress = useCallback(async () => {
     setBusyAction("leave");
     try {
@@ -400,6 +447,8 @@ export function RoomScreen({
 
       <View style={styles.badgeRow}>
         <Text style={styles.badge}>Ready {isReady ? "YES" : "NO"}</Text>
+        <Text style={styles.badge}>Map {String(projection?.mapProvider ?? "-")}</Text>
+        <Text style={styles.badge}>Transit {String(projection?.transitPackId ?? "-")}</Text>
       </View>
 
       {loading ? (
@@ -417,10 +466,12 @@ export function RoomScreen({
             httpBaseUrl={httpBaseUrl}
             playerId={playerId}
             busyAction={busyAction}
+            transitPacks={transitPacks}
             onRefreshProjection={refreshAll}
             onToggleReady={handleToggleReady}
             onStartRound={handleStartRound}
             onPrepareNextRound={handlePrepareNextRound}
+            onUpdateRoomConfig={handleUpdateRoomConfig}
             onPerformRoundAction={runRoundAction}
           />
 

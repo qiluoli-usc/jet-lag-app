@@ -23,11 +23,31 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+    : [];
+}
+
 function formatDuration(sec: unknown): string {
   const total = Math.max(0, Math.round(asNumber(sec, 0)));
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function formatFileSize(value: unknown): string {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) {
+    return "-";
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+  return `${Math.round(bytes)} B`;
 }
 
 function formatReason(reason: string): string {
@@ -91,6 +111,13 @@ function buildRegion(points: LatLng[]): Region {
   };
 }
 
+function formatEventLabel(type: string): string {
+  return type
+    .replace(/\./g, " ")
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 const TIMELINE_TYPES = new Set([
   "phase.hide.started",
   "phase.seek.started",
@@ -146,6 +173,15 @@ export function SummaryScreen({
       .slice(-12)
       .reverse();
   }, [events]);
+  const questionRecap = useMemo(() => asRecordArray(summaryData.questions), [summaryData.questions]);
+  const cardMoments = useMemo(() => asRecordArray(summaryData.cardMoments), [summaryData.cardMoments]);
+  const clues = useMemo(() => asRecordArray(summaryData.clues), [summaryData.clues]);
+  const evidenceItems = useMemo(() => asRecordArray(summaryData.evidence), [summaryData.evidence]);
+  const disputes = useMemo(() => asRecordArray(summaryData.disputes), [summaryData.disputes]);
+  const messages = useMemo(
+    () => asRecordArray(summaryData.messages).filter((item) => asText(item.kind) === "chat"),
+    [summaryData.messages],
+  );
 
   const prepareDisabled = Boolean(busyAction);
 
@@ -255,6 +291,85 @@ export function SummaryScreen({
       </View>
 
       <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Question Recap</Text>
+        {questionRecap.length === 0 ? (
+          <Text style={styles.helperText}>No structured questions recorded.</Text>
+        ) : (
+          questionRecap.map((item) => {
+            const answer = asRecord(item.answer);
+            return (
+              <View key={asText(item.questionId)} style={styles.timelineItem}>
+                <Text style={styles.timelineType}>{asText(item.category, "question")}</Text>
+                <Text style={styles.timelineData}>{asText(item.prompt)}</Text>
+                <Text style={styles.timelineTime}>
+                  {answer && Object.keys(answer).length > 0
+                    ? `Answer: ${asText(answer.value)}`
+                    : "Answer pending / unavailable"}
+                </Text>
+              </View>
+            );
+          })
+        )}
+
+        <View style={styles.separator} />
+        <Text style={styles.sectionTitle}>Cards And Curses</Text>
+        {cardMoments.length === 0 ? (
+          <Text style={styles.helperText}>No card events captured for this round.</Text>
+        ) : (
+          cardMoments.map((item, index) => (
+            <View key={`${asText(item.type)}-${index}`} style={styles.timelineItem}>
+              <Text style={styles.timelineType}>{formatEventLabel(asText(item.type))}</Text>
+              <Text style={styles.timelineTime}>{new Date(asText(item.ts, new Date().toISOString())).toLocaleTimeString()}</Text>
+              <Text style={styles.timelineData}>{JSON.stringify(item.data ?? {})}</Text>
+            </View>
+          ))
+        )}
+      </View>
+
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>Evidence And Disputes</Text>
+        {evidenceItems.length === 0 ? (
+          <Text style={styles.helperText}>No evidence uploaded in this round.</Text>
+        ) : (
+          evidenceItems.map((item) => (
+            <View key={asText(item.evidenceId)} style={styles.rowLine}>
+              <Text style={styles.rowTitle}>{asText(item.type, "evidence")}</Text>
+              <Text style={styles.rowValue}>{formatFileSize(item.sizeBytes)}</Text>
+            </View>
+          ))
+        )}
+        {disputes.length === 0 ? (
+          <Text style={styles.helperText}>No disputes were opened.</Text>
+        ) : (
+          disputes.map((item) => (
+            <View key={asText(item.disputeId)} style={styles.timelineItem}>
+              <Text style={styles.timelineType}>{asText(item.type, "dispute")} | {asText(item.status, "open")}</Text>
+              <Text style={styles.timelineData}>{asText(item.description)}</Text>
+              <Text style={styles.timelineTime}>
+                Resolution: {asText(asRecord(item.resolution).decision, "pending")}
+              </Text>
+            </View>
+          ))
+        )}
+
+        <View style={styles.separator} />
+        <Text style={styles.sectionTitle}>Clues And Chat</Text>
+        {clues.length === 0 && messages.length === 0 ? (
+          <Text style={styles.helperText}>No clues or chat messages were recorded.</Text>
+        ) : (
+          [...clues, ...messages]
+            .sort((a, b) => Date.parse(asText(a.createdAt)) - Date.parse(asText(b.createdAt)))
+            .map((item, index) => (
+              <View key={`${asText(item.id, asText(item.messageId, String(index)))}`} style={styles.timelineItem}>
+                <Text style={styles.timelineType}>{asText(item.kind, item.messageId ? "chat" : "clue")}</Text>
+                <Text style={styles.timelineTime}>{new Date(asText(item.createdAt, new Date().toISOString())).toLocaleTimeString()}</Text>
+                <Text style={styles.timelineData}>{asText(item.text)}</Text>
+              </View>
+            ))
+        )}
+      </View>
+
+      <View style={styles.card}>
         <Text style={styles.sectionTitle}>Timeline</Text>
         <ScrollView style={styles.timelineScroll} contentContainerStyle={styles.timelineInner}>
           {timeline.length === 0 ? (
@@ -262,7 +377,7 @@ export function SummaryScreen({
           ) : (
             timeline.map((event) => (
               <View key={event.id} style={styles.timelineItem}>
-                <Text style={styles.timelineType}>{event.type}</Text>
+                <Text style={styles.timelineType}>{formatEventLabel(event.type)}</Text>
                 <Text style={styles.timelineTime}>{new Date(event.ts).toLocaleTimeString()}</Text>
                 <Text style={styles.timelineData}>{JSON.stringify(event.data)}</Text>
               </View>

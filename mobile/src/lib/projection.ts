@@ -1,4 +1,7 @@
 import type {
+  ProjectionDispute,
+  ProjectionEvidence,
+  ProjectionMessage,
   PendingRewardChoiceProjection,
   PendingQuestionProjection,
   Projection,
@@ -39,13 +42,13 @@ function normalizePhaseValue(value: unknown): ScreenPhase {
 }
 
 export function getScreenPhase(projection: Projection | null): ScreenPhase {
-  const raw = projection?.round?.phase ?? projection?.phase;
+  const raw = projection?.phase ?? projection?.round?.phase;
   return normalizePhaseValue(raw);
 }
 
 export function normalizeProjection(input: Projection | null | undefined): Projection {
   const projection = input ?? {};
-  const phase = normalizePhaseValue(projection.round?.phase ?? projection.phase);
+  const phase = normalizePhaseValue(projection.phase ?? projection.round?.phase);
 
   return {
     ...projection,
@@ -90,7 +93,7 @@ export function applyEventToProjection(current: Projection | null, event: RoomEv
   };
   nextByType[event.type] = Number(nextByType[event.type] ?? 0) + 1;
 
-  return {
+  const nextProjection: Projection = {
     ...base,
     phase: nextPhase,
     round: {
@@ -103,6 +106,37 @@ export function applyEventToProjection(current: Projection | null, event: RoomEv
     },
     summary: event.type === "summary.generated" ? event.data : base.summary,
   };
+
+  if (event.type === "room.created" || event.type === "room.config.updated") {
+    nextProjection.mapProvider = String(event.data?.mapProvider ?? base.mapProvider ?? "").trim() || null;
+    nextProjection.transitPackId = event.data?.transitPackId == null
+      ? (base.transitPackId ?? null)
+      : String(event.data.transitPackId).trim() || null;
+    nextProjection.config = event.data?.config && typeof event.data.config === "object"
+      ? { ...(event.data.config as Record<string, unknown>) }
+      : (base.config ?? null);
+  }
+
+  if (event.type === "message.sent") {
+    const existing = Array.isArray(base.messages) ? base.messages : [];
+    nextProjection.messages = [
+      ...existing,
+      {
+        id: typeof event.data?.messageId === "string" ? event.data.messageId : undefined,
+        messageId: typeof event.data?.messageId === "string" ? event.data.messageId : undefined,
+        kind: typeof event.data?.kind === "string" ? event.data.kind : undefined,
+        playerId: typeof event.data?.playerId === "string" ? event.data.playerId : null,
+        text: typeof event.data?.text === "string" ? event.data.text : undefined,
+        roundNumber: typeof event.data?.roundNumber === "number" ? event.data.roundNumber : undefined,
+        createdAt: typeof event.data?.createdAt === "string" ? event.data.createdAt : undefined,
+        metadata: event.data?.metadata && typeof event.data.metadata === "object"
+          ? (event.data.metadata as Record<string, unknown>)
+          : null,
+      },
+    ].slice(-80);
+  }
+
+  return nextProjection;
 }
 
 function playerFromUnknown(id: string, value: unknown): ProjectionPlayer {
@@ -146,6 +180,24 @@ export function getProjectionPlayers(projection: Projection | null): ProjectionP
 export function getProjectionHand(projection: Projection | null): Array<Record<string, unknown>> {
   return Array.isArray(projection?.hand)
     ? projection.hand.filter((item) => item && typeof item === "object")
+    : [];
+}
+
+export function getProjectionEvidence(projection: Projection | null): ProjectionEvidence[] {
+  return Array.isArray(projection?.evidence)
+    ? projection.evidence.filter((item): item is ProjectionEvidence => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+export function getProjectionDisputes(projection: Projection | null): ProjectionDispute[] {
+  return Array.isArray(projection?.disputes)
+    ? projection.disputes.filter((item): item is ProjectionDispute => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+export function getProjectionMessages(projection: Projection | null): ProjectionMessage[] {
+  return Array.isArray(projection?.messages)
+    ? projection.messages.filter((item): item is ProjectionMessage => Boolean(item && typeof item === "object"))
     : [];
 }
 

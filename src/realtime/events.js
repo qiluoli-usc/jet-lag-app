@@ -119,6 +119,9 @@ function createProjection(roomId = null) {
     roomId,
     phase: "Lobby",
     paused: false,
+    mapProvider: null,
+    transitPackId: null,
+    config: null,
     roundNumber: 0,
     pendingQuestionId: null,
     pendingCatchClaimId: null,
@@ -127,6 +130,7 @@ function createProjection(roomId = null) {
     questions: {},
     disputes: {},
     evidence: {},
+    messages: [],
     mapAnnotations: [],
     counters: {
       total: 0,
@@ -176,6 +180,24 @@ const PROTOCOL = Object.freeze({
     (state, event) => {
       state.roomId = event.data.roomId ?? state.roomId;
       state.phase = "Lobby";
+      state.mapProvider = event.data.mapProvider ?? state.mapProvider ?? null;
+      state.transitPackId = event.data.transitPackId ?? state.transitPackId ?? null;
+    },
+  ),
+  "room.config.updated": def(
+    "room.config.updated",
+    EventVisibility.PUBLIC,
+    schema(["roomId", "mapProvider"], {
+      roomId: "string",
+      mapProvider: "string",
+      transitPackId: ["string", "null"],
+      config: ["object", "null"],
+    }),
+    (state, event) => {
+      state.roomId = event.data.roomId ?? state.roomId;
+      state.mapProvider = event.data.mapProvider ?? state.mapProvider ?? null;
+      state.transitPackId = event.data.transitPackId ?? state.transitPackId ?? null;
+      state.config = event.data.config ? deepClone(event.data.config) : state.config ?? null;
     },
   ),
   "player.joined": def(
@@ -414,7 +436,12 @@ const PROTOCOL = Object.freeze({
   "card.cast": def(
     "card.cast",
     EventVisibility.PUBLIC,
-    schema(["cardId", "targetPlayerId"], { cardId: "string", targetPlayerId: "string", effect: "object" }),
+    schema(["cardId"], {
+      cardId: "string",
+      targetPlayerId: "string",
+      targetPlayerIds: "array",
+      effect: "object",
+    }),
     () => {},
     WsEvent.CARD_PLAYED,
   ),
@@ -453,6 +480,31 @@ const PROTOCOL = Object.freeze({
     EventVisibility.PUBLIC,
     schema(["id", "playerId", "text"], { id: "string", playerId: "string", text: "string" }),
     () => {},
+  ),
+  "message.sent": def(
+    "message.sent",
+    EventVisibility.PUBLIC,
+    schema(["messageId", "kind", "text", "createdAt"], {
+      messageId: "string",
+      kind: "string",
+      text: "string",
+      playerId: ["string", "null"],
+      roundNumber: "number",
+      createdAt: "string",
+      metadata: "object",
+    }),
+    (state, event) => {
+      const nextMessage = {
+        messageId: event.data.messageId,
+        kind: event.data.kind,
+        text: event.data.text,
+        playerId: event.data.playerId ?? null,
+        roundNumber: event.data.roundNumber ?? null,
+        createdAt: event.data.createdAt,
+        metadata: event.data.metadata ?? {},
+      };
+      state.messages = [...(state.messages ?? []), nextMessage].slice(-80);
+    },
   ),
   "catch.claimed": def(
     "catch.claimed",
@@ -643,7 +695,28 @@ export function validateEventPayload(type, payload) {
       errors: [`Unknown event type: ${type}`],
     };
   }
-  return validatePayloadSchema(protocol.payloadSchema, payload);
+  const validation = validatePayloadSchema(protocol.payloadSchema, payload);
+  if (!validation.ok) {
+    return validation;
+  }
+
+  if (type === "card.cast") {
+    const targetPlayerId = typeof payload?.targetPlayerId === "string" ? payload.targetPlayerId.trim() : "";
+    const targetPlayerIds = Array.isArray(payload?.targetPlayerIds)
+      ? payload.targetPlayerIds
+        .map((item) => String(item ?? "").trim())
+        .filter((item) => item.length > 0)
+      : [];
+
+    if (!targetPlayerId && targetPlayerIds.length === 0) {
+      return {
+        ok: false,
+        errors: ["card.cast requires targetPlayerId or targetPlayerIds"],
+      };
+    }
+  }
+
+  return validation;
 }
 
 export function applyEventToProjection(state, event) {

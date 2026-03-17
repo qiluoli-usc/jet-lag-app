@@ -1,5 +1,9 @@
 import type {
+  PendingRewardChoiceProjection,
   PendingQuestionProjection,
+  ProjectionDispute,
+  ProjectionEvidence,
+  ProjectionMessage,
   ProjectionPlayer,
   RoomProjection,
   RoundAction,
@@ -31,7 +35,7 @@ function normalizePhaseValue(value: unknown): string {
 
 export function normalizeProjection(input: RoomProjection | null | undefined): RoomProjection {
   const projection = input ?? {};
-  const phase = normalizePhaseValue(projection.round?.phase ?? projection.phase);
+  const phase = normalizePhaseValue(projection.phase ?? projection.round?.phase);
 
   return {
     ...projection,
@@ -100,6 +104,24 @@ export function getProjectionHand(projection: RoomProjection | null): Array<Reco
     : [];
 }
 
+export function getProjectionEvidence(projection: RoomProjection | null): ProjectionEvidence[] {
+  return Array.isArray(projection?.evidence)
+    ? projection.evidence.filter((item): item is ProjectionEvidence => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+export function getProjectionDisputes(projection: RoomProjection | null): ProjectionDispute[] {
+  return Array.isArray(projection?.disputes)
+    ? projection.disputes.filter((item): item is ProjectionDispute => Boolean(item && typeof item === "object"))
+    : [];
+}
+
+export function getProjectionMessages(projection: RoomProjection | null): ProjectionMessage[] {
+  return Array.isArray(projection?.messages)
+    ? projection.messages.filter((item): item is ProjectionMessage => Boolean(item && typeof item === "object"))
+    : [];
+}
+
 export function getProjectionCapabilities(projection: RoomProjection | null): Record<string, unknown> {
   const raw = projection?.capabilities;
   return raw && typeof raw === "object" ? { ...raw } : {};
@@ -129,4 +151,12 @@ export function getPendingQuestion(projection: RoomProjection | null): PendingQu
     return null;
   }
   return pending as PendingQuestionProjection;
+}
+
+export function getPendingRewardChoice(projection: RoomProjection | null): PendingRewardChoiceProjection | null {
+  const pending = projection?.round?.pendingRewardChoice;
+  if (!pending || typeof pending !== "object") {
+    return null;
+  }
+  return pending as PendingRewardChoiceProjection;
 }

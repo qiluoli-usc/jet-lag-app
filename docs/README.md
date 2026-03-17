@@ -37,3 +37,10 @@ This index defines what each product document is for and which one is authoritat
   - Type: Milestone reassessment
   - Use for: Checking whether Phase 1 is actually complete against code and runnable validation
   - Rule: Treat this as the latest closure-status note for Phase 1 until the phase tasks and plan are synchronized.
+
+## Execution Plans
+
+- `PHASE_2_TASKS_2026-03-16.md`
+  - Type: Task breakdown + action plan
+  - Use for: The current Phase 2 scope, priorities, and implementation order
+  - Rule: Prefer this over the older coarse Phase 2 bullets in the gap analysis when deciding what to build next.

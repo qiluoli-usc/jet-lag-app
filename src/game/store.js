@@ -88,6 +88,7 @@ function projectionSeed(roomId) {
     questions: {},
     disputes: {},
     evidence: {},
+    messages: [],
     mapAnnotations: [],
     counters: { total: 0, byType: {} },
     updatedAt: null,

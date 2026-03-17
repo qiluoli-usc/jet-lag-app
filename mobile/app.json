@@ -20,11 +20,14 @@
         "UIBackgroundModes": ["location", "remote-notification"],
         "NSLocationWhenInUseUsageDescription": "Jet Lag App uses your location during live rounds so teammates can track the active player on the map.",
         "NSLocationAlwaysAndWhenInUseUsageDescription": "Jet Lag App uses your location in the background during live rounds to keep the game map updated while you move.",
-        "NSLocationAlwaysUsageDescription": "Jet Lag App uses your location in the background during live rounds to keep the game map updated while you move."
+        "NSLocationAlwaysUsageDescription": "Jet Lag App uses your location in the background during live rounds to keep the game map updated while you move.",
+        "NSCameraUsageDescription": "Jet Lag App uses the camera to capture match evidence and photo answers.",
+        "NSPhotoLibraryUsageDescription": "Jet Lag App uses your photo library so you can attach evidence and answer photos from your device."
       }
     },
     "plugins": [
       "expo-asset",
+      "expo-image-picker",
       "expo-location",
       "expo-notifications"
     ]

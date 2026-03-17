@@ -4,12 +4,19 @@ import type {
   CardDefsResponse,
   CreateRoomResponse,
   DebugAdvancePhaseResponse,
+  DisputeResponse,
+  EvidenceCompleteResponse,
+  EvidenceUploadBinaryResponse,
+  EvidenceUploadInitResponse,
   JoinRoomResponse,
   LeaveRoomResponse,
   LocationUpdateResponse,
+  MessageResponse,
   NextRoundResponse,
+  PlaceDetailsResponse,
   QuestionDefsResponse,
   ReadyResponse,
+  ReverseAdminLevelsResponse,
   RewardChoiceResponse,
   Role,
   RoomViewResponse,
@@ -17,6 +24,8 @@ import type {
   SearchPlacesResponse,
   SnapshotResponse,
   StartRoundResponse,
+  TransitPackListResponse,
+  UpdateRoomConfigResponse,
 } from "../types";
 import { Platform } from "react-native";
 import { getAuthSession } from "./authSession";
@@ -129,12 +138,16 @@ function encode(value: string): string {
   return encodeURIComponent(value.trim());
 }
 
-export async function createRoom(httpBaseUrl: string, name: string): Promise<CreateRoomResponse> {
+export async function createRoom(
+  httpBaseUrl: string,
+  payload: {
+    name: string;
+    transitPackId?: string | null;
+  },
+): Promise<CreateRoomResponse> {
   return request<CreateRoomResponse>(httpBaseUrl, "/rooms", {
     method: "POST",
-    body: JSON.stringify({
-      name,
-    }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -263,6 +276,12 @@ export async function fetchCardDefs(httpBaseUrl: string): Promise<CardDefsRespon
   });
 }
 
+export async function fetchTransitPacks(httpBaseUrl: string): Promise<TransitPackListResponse> {
+  return request<TransitPackListResponse>(httpBaseUrl, "/transit/packs", {
+    method: "GET",
+  });
+}
+
 export async function updatePlayerLocation(
   httpBaseUrl: string,
   code: string,
@@ -290,6 +309,28 @@ export async function searchRoomPlaces(
   });
 }
 
+export async function fetchRoomPlaceDetails(
+  httpBaseUrl: string,
+  code: string,
+  payload: { playerId: string; placeId: string },
+): Promise<PlaceDetailsResponse> {
+  return request<PlaceDetailsResponse>(httpBaseUrl, `/rooms/${encode(code)}/places/details`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function reverseRoomAdminLevels(
+  httpBaseUrl: string,
+  code: string,
+  payload: { playerId: string; lat: number; lng: number },
+): Promise<ReverseAdminLevelsResponse> {
+  return request<ReverseAdminLevelsResponse>(httpBaseUrl, `/rooms/${encode(code)}/admin-levels/reverse`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function addMapAnnotation(
   httpBaseUrl: string,
   code: string,
@@ -308,6 +349,22 @@ export async function addMapAnnotation(
   });
 }
 
+export async function updateRoomConfig(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    transitPackId?: string | null;
+    borderPolygonGeoJSON?: Record<string, unknown> | null;
+    hidingAreaGeoJSON?: Record<string, unknown> | null;
+  },
+): Promise<UpdateRoomConfigResponse> {
+  return request<UpdateRoomConfigResponse>(httpBaseUrl, `/rooms/${encode(code)}/config`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function chooseRewardCards(
   httpBaseUrl: string,
   code: string,
@@ -317,6 +374,186 @@ export async function chooseRewardCards(
   },
 ): Promise<RewardChoiceResponse> {
   return request<RewardChoiceResponse>(httpBaseUrl, `/rooms/${encode(code)}/rewards/choose`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function castPlayerCard(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    cardId: string;
+    targetPlayerId?: string | null;
+    discardCardIds?: string[];
+  },
+): Promise<{ effect: Record<string, unknown> | Array<Record<string, unknown>> }> {
+  return request<{ effect: Record<string, unknown> | Array<Record<string, unknown>> }>(
+    httpBaseUrl,
+    `/rooms/${encode(code)}/cards/cast`,
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function initEvidenceUpload(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    type?: string;
+    mimeType?: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<EvidenceUploadInitResponse> {
+  return request<EvidenceUploadInitResponse>(httpBaseUrl, `/rooms/${encode(code)}/evidence/upload-init`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function uploadEvidenceBinary(
+  httpBaseUrl: string,
+  uploadUrl: string,
+  payload: {
+    uri: string;
+    mimeType?: string | null;
+    fileName?: string | null;
+    onProgress?: (progress: number) => void;
+  },
+): Promise<EvidenceUploadBinaryResponse> {
+  const localResponse = await fetch(payload.uri);
+  const blob = await localResponse.blob();
+
+  return new Promise<EvidenceUploadBinaryResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", `${normalizeBaseUrl(httpBaseUrl)}${uploadUrl}`);
+    xhr.setRequestHeader("Content-Type", payload.mimeType || "application/octet-stream");
+    if (payload.fileName) {
+      xhr.setRequestHeader("X-Upload-Filename", encodeURIComponent(payload.fileName));
+    }
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new ApiError(xhr.status, xhr.responseText || `Upload failed: ${xhr.status}`));
+        return;
+      }
+      try {
+        const parsed = JSON.parse(xhr.responseText) as EvidenceUploadBinaryResponse;
+        payload.onProgress?.(1);
+        resolve(parsed);
+      } catch {
+        reject(new ApiError(xhr.status, "Upload completed but response was invalid"));
+      }
+    };
+    xhr.onerror = () => {
+      reject(new ApiError(0, "Binary upload failed"));
+    };
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        payload.onProgress?.(event.loaded / event.total);
+      }
+    };
+    xhr.send(blob);
+  });
+}
+
+export async function completeEvidenceUpload(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    evidenceId: string;
+    storageKey: string;
+    fileName?: string;
+    mimeType?: string;
+    sizeBytes?: number | null;
+    viewUrl?: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<EvidenceCompleteResponse> {
+  return request<EvidenceCompleteResponse>(httpBaseUrl, `/rooms/${encode(code)}/evidence/complete`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createDispute(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    type: string;
+    description: string;
+    votePolicy?: string;
+    payload?: Record<string, unknown>;
+    autoPause?: boolean;
+  },
+): Promise<DisputeResponse> {
+  return request<DisputeResponse>(httpBaseUrl, `/rooms/${encode(code)}/disputes`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function voteDispute(
+  httpBaseUrl: string,
+  code: string,
+  disputeId: string,
+  payload: {
+    playerId: string;
+    vote: "accept" | "reject";
+    resumeAfterResolve?: boolean;
+  },
+): Promise<DisputeResponse> {
+  return request<DisputeResponse>(httpBaseUrl, `/rooms/${encode(code)}/disputes/${encode(disputeId)}/vote`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resolveCatch(
+  httpBaseUrl: string,
+  code: string,
+  claimId: string,
+  payload: {
+    playerId: string;
+    result: "success" | "failed";
+    reason?: string | null;
+  },
+): Promise<{ result: Record<string, unknown> }> {
+  return request<{ result: Record<string, unknown> }>(httpBaseUrl, `/rooms/${encode(code)}/catch/${encode(claimId)}/respond`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function sendChatMessage(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    text: string;
+    replyToMessageId?: string | null;
+  },
+): Promise<MessageResponse> {
+  return request<MessageResponse>(httpBaseUrl, `/rooms/${encode(code)}/messages`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function sendClue(
+  httpBaseUrl: string,
+  code: string,
+  payload: {
+    playerId: string;
+    text: string;
+  },
+): Promise<{ clue: Record<string, unknown> }> {
+  return request<{ clue: Record<string, unknown> }>(httpBaseUrl, `/rooms/${encode(code)}/clues`, {
     method: "POST",
     body: JSON.stringify(payload),
   });

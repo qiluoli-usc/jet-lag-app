@@ -1,5 +1,5 @@
 import { formatRemaining, type CountdownTarget } from "../lib/phase";
-import type { FrontPhase, QuestionDef, RoomEvent, RoomProjection, RoundAction } from "../types";
+import type { FrontPhase, QuestionDef, RoomEvent, RoomProjection, RoundAction, TransitPackSummary } from "../types";
 import { HidingPanel } from "./phase/HidingPanel";
 import { LobbyPanel } from "./phase/LobbyPanel";
 import { SeekingPanel } from "./phase/SeekingPanel";
@@ -16,8 +16,15 @@ interface PhaseRouterProps {
   playerId: string | null;
   busyAction: string | null;
   questionDefs: QuestionDef[];
+  transitPacks: TransitPackSummary[];
   onRefreshProjection: () => Promise<void>;
   onPerformRoundAction: (action: RoundAction, payload: Record<string, unknown>) => Promise<void>;
+  onUpdateRoomConfig: (payload: {
+    transitPackId?: string | null;
+    borderPolygonGeoJSON?: Record<string, unknown> | null;
+    hidingAreaGeoJSON?: Record<string, unknown> | null;
+  }) => Promise<void>;
+  onPrepareNextRound: () => Promise<void>;
 }
 
 export function PhaseRouter({
@@ -31,8 +38,11 @@ export function PhaseRouter({
   playerId,
   busyAction,
   questionDefs,
+  transitPacks,
   onRefreshProjection,
   onPerformRoundAction,
+  onUpdateRoomConfig,
+  onPrepareNextRound,
 }: PhaseRouterProps) {
   const countdownText = countdown ? `${countdown.label}: ${formatRemaining(countdown.targetAtMs - nowMs)}` : null;
 
@@ -68,7 +78,15 @@ export function PhaseRouter({
     );
   }
   if (phase === "SUMMARY") {
-    return <SummaryPanel summary={summary} />;
+    return <SummaryPanel summary={summary} onPrepareNextRound={onPrepareNextRound} busyAction={busyAction} />;
   }
-  return <LobbyPanel />;
+  return (
+    <LobbyPanel
+      projection={projection}
+      playerId={playerId}
+      transitPacks={transitPacks}
+      busyAction={busyAction}
+      onUpdateRoomConfig={onUpdateRoomConfig}
+    />
+  );
 }

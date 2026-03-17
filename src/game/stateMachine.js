@@ -14,7 +14,6 @@ import {
 } from "./models.js";
 import {
   getMapProviderAdapter,
-  normalizeMapProvider,
 } from "../integrations/mapProviderAdapter.js";
 import {
   findNearestTransitStop,
@@ -154,8 +153,123 @@ function isRoundPaused(room) {
   return Boolean(room.pause?.isPaused);
 }
 
-function roomMapAdapter(room) {
-  return getMapProviderAdapter(room.mapProvider ?? room.mapSource);
+function toPoint(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const lat = Number(value.lat ?? value.latitude);
+  const lng = Number(value.lng ?? value.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return null;
+  }
+  return { lat, lng };
+}
+
+function firstGeoJsonPoint(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const geometry = String(value.type ?? "").toLowerCase() === "feature"
+    ? (value.geometry ?? null)
+    : value;
+  const coordinates = Array.isArray(geometry?.coordinates) ? geometry.coordinates : [];
+  const ring = Array.isArray(coordinates[0]) ? coordinates[0] : [];
+  for (const entry of ring) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      continue;
+    }
+    const lng = Number(entry[0]);
+    const lat = Number(entry[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return { lat, lng };
+    }
+  }
+  return null;
+}
+
+function isLikelyMainlandChinaPoint(point) {
+  if (!point) {
+    return false;
+  }
+  return point.lat >= 18 && point.lat <= 54 && point.lng >= 73 && point.lng <= 135;
+}
+
+function inferRoomMapProvider(room, hintPoint = null) {
+  const normalizedHint = toPoint(hintPoint);
+  if (normalizedHint) {
+    return isLikelyMainlandChinaPoint(normalizedHint) ? "AMAP" : "GOOGLE";
+  }
+
+  for (const player of room.players ?? []) {
+    const point = toPoint(player.lastLocation);
+    if (point) {
+      return isLikelyMainlandChinaPoint(point) ? "AMAP" : "GOOGLE";
+    }
+  }
+
+  const boundaryPoint = firstGeoJsonPoint(
+    room.borderPolygonGeoJSON ?? room.mapBoundary ?? room.config?.borderPolygonGeoJSON,
+  );
+  if (boundaryPoint) {
+    return isLikelyMainlandChinaPoint(boundaryPoint) ? "AMAP" : "GOOGLE";
+  }
+
+  const hidingAreaPoint = firstGeoJsonPoint(room.hidingAreaGeoJSON ?? room.config?.hidingAreaGeoJSON);
+  if (hidingAreaPoint) {
+    return isLikelyMainlandChinaPoint(hidingAreaPoint) ? "AMAP" : "GOOGLE";
+  }
+
+  const transitPack = getTransitPack(room.transitPackId);
+  if (Array.isArray(transitPack?.stops) && transitPack.stops[0]) {
+    const anchor = {
+      lat: Number(transitPack.stops[0].lat),
+      lng: Number(transitPack.stops[0].lng),
+    };
+    return isLikelyMainlandChinaPoint(anchor) ? "AMAP" : "GOOGLE";
+  }
+
+  return "GOOGLE";
+}
+
+function syncResolvedMapProvider(room, hintPoint = null) {
+  const resolvedProvider = inferRoomMapProvider(room, hintPoint);
+  room.mapProvider = resolvedProvider;
+  room.mapSource = resolvedProvider;
+  room.rules = {
+    ...room.rules,
+    mapProvider: resolvedProvider,
+    mapSource: resolvedProvider,
+  };
+  room.config = {
+    ...(room.config ?? {}),
+    mapProvider: resolvedProvider,
+  };
+  return resolvedProvider;
+}
+
+function roomMapAdapter(room, hintPoint = null) {
+  return getMapProviderAdapter(syncResolvedMapProvider(room, hintPoint));
+}
+
+function resolveTransitPackId(value, { fallbackToDefault = true } = {}) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) {
+    if (!fallbackToDefault) {
+      return null;
+    }
+    const fallback = String(getDefaultTransitPackId() ?? "").trim();
+    return fallback || null;
+  }
+  assert(getTransitPack(normalized), `Transit pack not found: ${normalized}`, 400);
+  return normalized;
+}
+
+function normalizeGeoJsonConfig(value, fieldName) {
+  if (value == null) {
+    return null;
+  }
+  assert(typeof value === "object", `${fieldName} must be an object or null`);
+  return deepCopy(value);
 }
 
 function evaluatePlaceLegitimacy(room, placeDetails) {
@@ -200,6 +314,47 @@ function requirePlayer(room, playerId) {
   const player = room.players.find((item) => item.id === playerId);
   assert(player, `Player not found: ${playerId}`, 404);
   return player;
+}
+
+function ensureRoomMessages(room) {
+  if (!Array.isArray(room.messages)) {
+    room.messages = [];
+  }
+  return room.messages;
+}
+
+function appendRoomMessage(room, payload) {
+  const message = {
+    id: payload.id ?? newId("msg"),
+    kind: String(payload.kind ?? "chat"),
+    playerId: payload.playerId ?? null,
+    playerName: payload.playerName ?? null,
+    text: String(payload.text ?? "").trim(),
+    roundNumber: Number(payload.roundNumber ?? room.round.number),
+    createdAtMs: Number(payload.createdAtMs ?? nowMs()),
+    createdAt: payload.createdAt ?? nowIso(),
+    metadata: payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {},
+  };
+  ensureRoomMessages(room).push(message);
+  return message;
+}
+
+function findEvidenceRecord(evidenceId) {
+  const normalized = String(evidenceId ?? "").trim();
+  if (!normalized) {
+    return null;
+  }
+
+  for (const room of rooms.values()) {
+    const evidence = Array.isArray(room.evidence)
+      ? room.evidence.find((item) => item?.evidenceId === normalized)
+      : null;
+    if (evidence) {
+      return { room, evidence };
+    }
+  }
+
+  return null;
 }
 
 function appendEvent(room, details) {
@@ -674,12 +829,6 @@ function projectedLocation(viewerRole, targetPlayer, room) {
   if (viewerRole === Role.HIDER) {
     return targetPlayer.lastLocation;
   }
-  if (targetPlayer.role === Role.HIDER) {
-    if (room.phase === Phase.SUMMARY && room.rules.revealHiderPathInSummary) {
-      return targetPlayer.lastLocation;
-    }
-    return null;
-  }
   return targetPlayer.lastLocation;
 }
 
@@ -742,6 +891,108 @@ function computeTrailDistanceMeters(points) {
   return Number(total.toFixed(1));
 }
 
+function summarizeRoundQuestions(room) {
+  const answersByQuestionId = new Map(
+    (room.round.answers ?? []).map((answer) => [String(answer.questionId ?? ""), answer]),
+  );
+
+  return (room.round.questions ?? []).map((question) => {
+    const answer = answersByQuestionId.get(String(question.id ?? ""));
+    return {
+      questionId: question.id,
+      askedBy: question.playerId,
+      category: question.category,
+      prompt: question.prompt,
+      optionKey: question.optionKey ?? null,
+      askedAt: question.askedAt,
+      answer: answer
+        ? {
+            answeredBy: answer.playerId,
+            answeredAt: answer.answeredAt,
+            kind: answer.kind,
+            value: answer.value,
+            timedOut: Boolean(answer.timedOut),
+            blurredByCard: Boolean(answer.blurredByCard),
+          }
+        : null,
+    };
+  });
+}
+
+function summarizeRoundCardMoments(room) {
+  const relevantTypes = new Set([
+    "card.drawn",
+    "card.cast",
+    "question.reward.selected",
+    "question.reward.skipped",
+  ]);
+  const roundStartMs = Number(room.round.hideStartedAtMs ?? room.round.seekStartedAtMs ?? 0);
+
+  return (room.events ?? [])
+    .filter((event) => relevantTypes.has(event.type))
+    .filter((event) => {
+      const tsMs = Date.parse(String(event.ts ?? ""));
+      return Number.isFinite(tsMs) && tsMs >= roundStartMs;
+    })
+    .map((event) => ({
+      type: event.type,
+      actorId: event.actorId ?? null,
+      ts: event.ts,
+      data: deepCopy(event.data ?? {}),
+    }));
+}
+
+function summarizeRoundEvidence(room) {
+  return (room.evidence ?? [])
+    .filter((item) => Number(item.roundNumber ?? room.round.number) === room.round.number)
+    .map((item) => ({
+      evidenceId: item.evidenceId,
+      type: item.type,
+      status: item.status,
+      actorPlayerId: item.actorPlayerId,
+      fileName: item.fileName ?? null,
+      mimeType: item.mimeType ?? null,
+      sizeBytes: item.sizeBytes ?? null,
+      storageKey: item.storageKey ?? null,
+      viewUrl: item.viewUrl ?? null,
+      metadata: deepCopy(item.metadata ?? {}),
+      createdAt: item.createdAt,
+      completedAt: item.completedAt,
+    }));
+}
+
+function summarizeRoundDisputes(room) {
+  return (room.disputes ?? [])
+    .filter((item) => Number(item.roundNumber ?? room.round.number) === room.round.number)
+    .map((item) => ({
+      disputeId: item.id,
+      type: item.type,
+      status: item.status,
+      createdBy: item.createdBy,
+      createdAt: item.createdAt,
+      description: item.description,
+      payload: deepCopy(item.payload ?? {}),
+      votes: deepCopy(item.votes ?? {}),
+      requiredVoterIds: [...(item.requiredVoterIds ?? [])],
+      resolution: item.resolution ? deepCopy(item.resolution) : null,
+    }));
+}
+
+function summarizeRoundMessages(room) {
+  return (room.messages ?? [])
+    .filter((message) => Number(message.roundNumber ?? room.round.number) === room.round.number)
+    .map((message) => ({
+      messageId: message.id,
+      kind: message.kind,
+      playerId: message.playerId ?? null,
+      playerName: message.playerName ?? null,
+      text: message.text,
+      roundNumber: message.roundNumber,
+      createdAt: message.createdAt,
+      metadata: deepCopy(message.metadata ?? {}),
+    }));
+}
+
 function finalizeSummary(room, result) {
   const resolvedAtMs = nowMs();
   room.phase = Phase.SUMMARY;
@@ -797,6 +1048,12 @@ function finalizeSummary(room, result) {
       role: player.role,
       ready: Boolean(player.ready),
     })),
+    questions: summarizeRoundQuestions(room),
+    cardMoments: summarizeRoundCardMoments(room),
+    clues: deepCopy(room.round.clues ?? []),
+    evidence: summarizeRoundEvidence(room),
+    disputes: summarizeRoundDisputes(room),
+    messages: summarizeRoundMessages(room),
     scores: deepCopy(room.scores),
   };
 
@@ -902,31 +1159,36 @@ export function createRoom(input = {}) {
   const roomId = newId("room");
   const scale = normalizeScale(input.scale);
   const rules = buildRulesForScale(scale, input.rules ?? {});
-  const mapProvider = normalizeMapProvider(input.mapProvider ?? input.mapSource ?? rules.mapSource);
-  const transitPackId = String(input.transitPackId ?? getDefaultTransitPackId() ?? "").trim() || null;
-  if (transitPackId) {
-    assert(getTransitPack(transitPackId), `Transit pack not found: ${transitPackId}`, 400);
-  }
-  const borderPolygonGeoJSON = input.borderPolygonGeoJSON ?? input.mapBoundary ?? null;
+  const transitPackId = resolveTransitPackId(input.transitPackId, { fallbackToDefault: true });
+  const borderPolygonGeoJSON = normalizeGeoJsonConfig(
+    input.borderPolygonGeoJSON ?? input.mapBoundary ?? null,
+    "borderPolygonGeoJSON",
+  );
+  const hidingAreaGeoJSON = normalizeGeoJsonConfig(
+    input.hidingAreaGeoJSON ?? input.hideAreaGeoJSON ?? null,
+    "hidingAreaGeoJSON",
+  );
   const room = {
     id: roomId,
     name: input.name ?? `Room ${roomId.slice(-4)}`,
     scale,
     mode: input.mode ?? "1v2",
-    mapProvider,
-    mapSource: mapProvider,
+    mapProvider: rules.mapSource,
+    mapSource: rules.mapSource,
     transitPackId,
     expansionEnabled: Boolean(input.expansionEnabled ?? true),
     totalRounds: Number.isFinite(Number(input.totalRounds)) ? Number(input.totalRounds) : null,
     mapBoundary: borderPolygonGeoJSON,
     borderPolygonGeoJSON,
+    hidingAreaGeoJSON,
     rules,
     config: {
       scale: scale.toUpperCase(),
-      mapProvider,
+      mapProvider: rules.mapSource,
       transitPackId,
       enableExpansionPackV1: Boolean(input.expansionEnabled ?? true),
       borderPolygonGeoJSON,
+      hidingAreaGeoJSON,
       timers: {
         hideSeconds: rules.hideDurationSec,
         answerSeconds: {
@@ -981,6 +1243,7 @@ export function createRoom(input = {}) {
     events: [],
     deck: shuffle(DEFAULT_DECK.map((item) => ({ ...item }))),
     discard: [],
+    messages: [],
     evidence: [],
     poiLegitimacyOverrides: {},
     disputes: [],
@@ -989,6 +1252,7 @@ export function createRoom(input = {}) {
       hiderWins: 0,
     },
   };
+  const mapProvider = syncResolvedMapProvider(room);
 
   appendEvent(room, {
     type: "room.created",
@@ -1005,12 +1269,68 @@ export function createRoom(input = {}) {
   return deepCopy(room);
 }
 
+export function updateRoomConfig(roomId, input = {}) {
+  const room = requireRoom(roomId);
+  assert(room.phase === Phase.LOBBY, "Room config can be updated only while the room is in Lobby");
+
+  const actor = requirePlayer(room, input?.playerId);
+  const transitPackId = resolveTransitPackId(
+    Object.prototype.hasOwnProperty.call(input, "transitPackId") ? input.transitPackId : room.transitPackId,
+    { fallbackToDefault: true },
+  );
+  const borderPolygonGeoJSON = Object.prototype.hasOwnProperty.call(input, "borderPolygonGeoJSON")
+    ? normalizeGeoJsonConfig(input.borderPolygonGeoJSON, "borderPolygonGeoJSON")
+    : normalizeGeoJsonConfig(
+      room.borderPolygonGeoJSON ?? room.mapBoundary ?? room.config?.borderPolygonGeoJSON ?? null,
+      "borderPolygonGeoJSON",
+    );
+  const hidingAreaGeoJSON = Object.prototype.hasOwnProperty.call(input, "hidingAreaGeoJSON")
+    ? normalizeGeoJsonConfig(input.hidingAreaGeoJSON, "hidingAreaGeoJSON")
+    : normalizeGeoJsonConfig(
+      room.hidingAreaGeoJSON ?? room.config?.hidingAreaGeoJSON ?? null,
+      "hidingAreaGeoJSON",
+    );
+
+  room.transitPackId = transitPackId;
+  room.mapBoundary = borderPolygonGeoJSON;
+  room.borderPolygonGeoJSON = borderPolygonGeoJSON;
+  room.hidingAreaGeoJSON = hidingAreaGeoJSON;
+  room.updatedAt = nowIso();
+  const mapProvider = syncResolvedMapProvider(room);
+  room.config = {
+    ...(room.config ?? {}),
+    mapProvider,
+    transitPackId,
+    borderPolygonGeoJSON,
+    hidingAreaGeoJSON,
+  };
+
+  appendEvent(room, {
+    type: "room.config.updated",
+    actorId: actor.id,
+    data: {
+      roomId: room.id,
+      mapProvider,
+      transitPackId,
+      config: {
+        ...(room.config ?? {}),
+        mapProvider,
+        transitPackId,
+        borderPolygonGeoJSON,
+        hidingAreaGeoJSON,
+      },
+    },
+  });
+
+  return projectRoom(room.id, actor.id);
+}
+
 export function listRooms() {
   return [...rooms.values()].map((room) => ({
     id: room.id,
     name: room.name,
     scale: room.scale,
-    mapProvider: room.mapProvider,
+    mapProvider: syncResolvedMapProvider(room),
     transitPackId: room.transitPackId,
     mode: room.mode,
     phase: room.phase,
@@ -1041,7 +1361,6 @@ export async function searchRoomPlaces(roomId, input) {
     requirePlayer(room, input.playerId);
   }
 
-  const adapter = roomMapAdapter(room);
   const query = String(input?.query ?? "").trim();
   const radiusM = Number(input?.radiusM ?? 5000);
   let center = input?.center ?? null;
@@ -1058,9 +1377,11 @@ export async function searchRoomPlaces(roomId, input) {
     center = { lat: 31.2304, lng: 121.4737 };
   }
 
+  const mapProvider = syncResolvedMapProvider(room, center);
+  const adapter = roomMapAdapter(room, center);
   const places = await adapter.searchPlaces(query, center, radiusM);
   return deepCopy({
-    mapProvider: room.mapProvider,
+    mapProvider,
     query,
     center,
     radiusM,
@@ -1076,13 +1397,14 @@ export async function getRoomPlaceDetails(roomId, input) {
   const placeId = String(input?.placeId ?? "").trim();
   assert(placeId.length > 0, "placeId is required");
 
+  const mapProvider = syncResolvedMapProvider(room);
   const adapter = roomMapAdapter(room);
   const details = await adapter.getPlaceDetails(placeId);
   assert(details, `Place not found: ${placeId}`, 404);
   const legitimacy = evaluatePlaceLegitimacy(room, details);
 
   return deepCopy({
-    mapProvider: room.mapProvider,
+    mapProvider,
     details,
     legitimacy,
   });
@@ -1097,10 +1419,12 @@ export async function reverseRoomAdminLevels(roomId, input) {
   const lng = Number(input?.lng);
   assert(Number.isFinite(lat) && Number.isFinite(lng), "lat and lng are required numbers");
 
-  const adapter = roomMapAdapter(room);
+  const hintPoint = { lat, lng };
+  const mapProvider = syncResolvedMapProvider(room, hintPoint);
+  const adapter = roomMapAdapter(room, hintPoint);
   const adminLevels = await adapter.reverseGeocodeAdminLevels(lat, lng);
   return deepCopy({
-    mapProvider: room.mapProvider,
+    mapProvider,
     lat,
     lng,
     adminLevels,
@@ -1145,6 +1469,7 @@ export function initEvidenceUpload(roomId, input) {
     status: "pending_upload",
     metadata: input?.metadata ?? {},
     uploadUrl: `/uploads/${evidenceId}`,
+    viewUrl: `/uploads/${evidenceId}`,
     createdAt: nowIso(),
     completedAt: null,
     expiresAt: new Date(expiresAtMs).toISOString(),
@@ -1182,6 +1507,8 @@ export function completeEvidenceUpload(roomId, input) {
   item.completedAt = nowIso();
   item.storageKey = String(input?.storageKey ?? `evidence/${item.evidenceId}`);
   item.fileName = String(input?.fileName ?? "");
+  item.mimeType = String(input?.mimeType ?? item.mimeType ?? "application/octet-stream");
+  item.viewUrl = String(input?.viewUrl ?? item.viewUrl ?? `/uploads/${item.evidenceId}`);
   item.sizeBytes = Number.isFinite(Number(input?.sizeBytes)) ? Number(input.sizeBytes) : null;
   item.metadata = {
     ...(item.metadata ?? {}),
@@ -1199,6 +1526,19 @@ export function completeEvidenceUpload(roomId, input) {
   });
 
   return deepCopy(item);
+}
+
+export function getEvidenceUploadRecord(evidenceId) {
+  const match = findEvidenceRecord(evidenceId);
+  if (!match) {
+    return null;
+  }
+
+  return {
+    roomId: match.room.id,
+    roomCode: match.room.code ?? null,
+    evidence: match.evidence,
+  };
 }
 
 export function joinRoom(roomId, input) {
@@ -1247,6 +1587,7 @@ export function joinRoom(roomId, input) {
     name,
     role,
     ready: false,
+    nextRoundReady: false,
     joinedAt: nowIso(),
     inTransit: false,
     hand: [],
@@ -1501,6 +1842,7 @@ export function createDispute(roomId, input) {
     requiredVoterIds,
     votes: {},
     createdBy: actor.id,
+    roundNumber: room.round.number,
     createdAt: nowIso(),
     description: String(input?.description ?? "").trim(),
     payload: input?.payload ?? {},
@@ -1678,6 +2020,7 @@ export function updateLocation(roomId, input) {
 
   player.lastLocation = report;
   player.locationTrail.push(report);
+  syncResolvedMapProvider(room, report);
 
   if (player.locationTrail.length > 500) {
     player.locationTrail.shift();
@@ -1686,7 +2029,7 @@ export function updateLocation(roomId, input) {
   appendEvent(room, {
     type: "location.updated",
     actorId: player.id,
-    visibility: player.role === Role.SEEKER ? Visibility.HIDER : Visibility.OBSERVERS,
+    visibility: player.role === Role.SEEKER ? Visibility.HIDER : Visibility.SEEKERS,
     data: {
       playerId: player.id,
       role: player.role,
@@ -2131,54 +2474,100 @@ export function castCard(roomId, input) {
     "Cards can be cast only during Seek/EndGame",
   );
 
-  const targetId = input?.targetPlayerId ?? player.id;
-  const target = requirePlayer(room, targetId);
   const cardId = String(input?.cardId ?? "");
   const idx = player.hand.findIndex((item) => item.id === cardId);
   assert(idx >= 0, `Card not found in hand: ${cardId}`, 404);
-
-  const [card] = player.hand.splice(idx, 1);
+  const card = player.hand[idx];
   const now = nowMs();
 
   if (card.type === "time_bonus_fixed") {
-    player.hand.push(card);
     assert(false, "Time bonus cards are scored at Caught and cannot be cast");
   }
 
-  room.discard.push(sanitizeCardTemplate(card));
+  const targetId = input?.targetPlayerId ?? player.id;
+  const target = card.type === "curse" ? null : requirePlayer(room, targetId);
+  const kind = card.effect?.kind;
+  const pendingQuestion = room.round.questions.find((item) => item.id === room.round.pendingQuestionId) ?? null;
+  const discardCount = Math.max(0, Number(card.effect?.discardCount ?? 0));
+  const drawCount = Math.max(1, Number(card.effect?.drawCount ?? 1));
+  const discardCardIds = Array.isArray(input?.discardCardIds) ? input.discardCardIds.map(String) : [];
+
+  let eligibleTargets = [];
 
   if (card.type === "powerup") {
-    const kind = card.effect?.kind;
+    if (kind === "veto_pending_question") {
+      assert(pendingQuestion, "No pending question to veto");
+    }
+
+    if (kind === "randomize_pending_question") {
+      assert(pendingQuestion, "No pending question to randomize");
+    }
+
+    if (kind === "discard_draw") {
+      assert(discardCardIds.length === discardCount, `Must discard exactly ${discardCount} cards`);
+      const unique = [...new Set(discardCardIds)];
+      assert(unique.length === discardCount, "Duplicate discard card IDs are not allowed");
+      const remainingHand = player.hand.filter((item) => item.id !== card.id);
+      for (const discardId of unique) {
+        const discardCard = remainingHand.find((item) => item.id === discardId);
+        assert(discardCard, `Discard card not found in hand: ${discardId}`);
+      }
+    }
+
+    if (kind === "expand_hand_limit") {
+      const increment = Math.max(0, Number(card.effect?.increment ?? 1));
+      assert(increment > 0, "expand_hand_limit increment must be greater than 0");
+    }
+
+    assert(
+      kind === "veto_pending_question" ||
+      kind === "randomize_pending_question" ||
+      kind === "discard_draw" ||
+      kind === "expand_hand_limit",
+      `Unsupported powerup effect: ${kind}`,
+    );
+  }
+
+  if (card.type === "hider_buff") {
+    assert(target.id === player.id, "Hider buff cards must target the hider");
+  }
+  if (card.type === "curse") {
+    const seekers = room.players.filter((item) => item.role === Role.SEEKER);
+    assert(seekers.length > 0, "Curse requires at least one seeker target");
+    eligibleTargets = seekers.filter((item) => !item.activeCurses.some((effect) => effect.sourceTemplateId === card.templateId));
+    assert(eligibleTargets.length > 0, `Curse already active on all seekers: ${card.templateId}`);
+  }
+
+  const [playedCard] = player.hand.splice(idx, 1);
+  room.discard.push(sanitizeCardTemplate(playedCard));
+
+  if (playedCard.type === "powerup") {
     const result = {
-      cardId: card.id,
+      cardId: playedCard.id,
       powerupKind: kind,
     };
 
     if (kind === "veto_pending_question") {
-      const pending = room.round.questions.find((item) => item.id === room.round.pendingQuestionId);
-      assert(pending, "No pending question to veto");
-      pending.status = "vetoed";
-      pending.reward.eligible = false;
-      pending.reward.skippedReason = "vetoed";
-      pending.answered = true;
+      pendingQuestion.status = "vetoed";
+      pendingQuestion.reward.eligible = false;
+      pendingQuestion.reward.skippedReason = "vetoed";
+      pendingQuestion.answered = true;
       room.round.pendingQuestionId = null;
       appendEvent(room, {
         type: "question.vetoed",
         actorId: player.id,
         data: {
-          questionId: pending.id,
+          questionId: pendingQuestion.id,
         },
       });
       return deepCopy(result);
     }
 
     if (kind === "randomize_pending_question") {
-      const pending = room.round.questions.find((item) => item.id === room.round.pendingQuestionId);
-      assert(pending, "No pending question to randomize");
-      const before = pending.optionKey;
-      pending.optionKey = pickRandomOption(pending.category, room, pending.optionKey);
-      pending.metadata = {
-        ...(pending.metadata ?? {}),
+      const before = pendingQuestion.optionKey;
+      pendingQuestion.optionKey = pickRandomOption(pendingQuestion.category, room, pendingQuestion.optionKey);
+      pendingQuestion.metadata = {
+        ...(pendingQuestion.metadata ?? {}),
         randomizedByCard: true,
         randomizedAt: nowIso(),
       };
@@ -2186,27 +2575,21 @@ export function castCard(roomId, input) {
         type: "question.randomized",
         actorId: player.id,
         data: {
-          questionId: pending.id,
+          questionId: pendingQuestion.id,
           before,
-          after: pending.optionKey,
+          after: pendingQuestion.optionKey,
         },
       });
       return deepCopy({
         ...result,
-        questionId: pending.id,
+        questionId: pendingQuestion.id,
         before,
-        after: pending.optionKey,
+        after: pendingQuestion.optionKey,
       });
     }
 
     if (kind === "discard_draw") {
-      const discardCount = Math.max(0, Number(card.effect.discardCount ?? 0));
-      const drawCount = Math.max(1, Number(card.effect.drawCount ?? 1));
-      const discardCardIds = Array.isArray(input?.discardCardIds) ? input.discardCardIds.map(String) : [];
-      assert(discardCardIds.length === discardCount, `Must discard exactly ${discardCount} cards`);
       const unique = [...new Set(discardCardIds)];
-      assert(unique.length === discardCount, "Duplicate discard card IDs are not allowed");
-
       const discarded = [];
       for (const discardId of unique) {
         const discardIdx = player.hand.findIndex((item) => item.id === discardId);
@@ -2239,7 +2622,7 @@ export function castCard(roomId, input) {
     }
 
     if (kind === "expand_hand_limit") {
-      const increment = Math.max(0, Number(card.effect.increment ?? 1));
+      const increment = Math.max(0, Number(playedCard.effect.increment ?? 1));
       player.handLimitBonus = Math.max(0, Number(player.handLimitBonus ?? 0) + increment);
       appendEvent(room, {
         type: "powerup.hand_limit_expanded",
@@ -2256,28 +2639,46 @@ export function castCard(roomId, input) {
         newMaxHandLimit: getMaxHandLimit(room, player),
       });
     }
-
-    assert(false, `Unsupported powerup effect: ${kind}`);
   }
 
-  if (card.type === "hider_buff") {
-    assert(target.id === player.id, "Hider buff cards must target the hider");
-  }
-  if (card.type === "curse") {
-    assert(target.role === Role.SEEKER, "Curse cards can only target seekers");
-    const exists = target.activeCurses.some((item) => item.sourceTemplateId === card.templateId);
-    assert(!exists, `Curse already active on target: ${card.templateId}`);
+  if (playedCard.type === "curse") {
+    const appliedEffects = eligibleTargets.map((seeker) => {
+      const effect = {
+        id: newId("curse"),
+        sourceTemplateId: playedCard.templateId,
+        sourceCardId: playedCard.id,
+        sourcePlayerId: player.id,
+        targetPlayerId: seeker.id,
+        effect: playedCard.effect,
+        startedAt: nowIso(),
+        expiresAtMs: now + (playedCard.effect.durationSec ?? 0) * 1000,
+      };
+      seeker.activeCurses.push(effect);
+      return effect;
+    });
+
+    appendEvent(room, {
+      type: "card.cast",
+      actorId: player.id,
+      data: {
+        cardId: playedCard.id,
+        targetPlayerIds: eligibleTargets.map((item) => item.id),
+        effect: playedCard.effect,
+      },
+    });
+
+    return deepCopy(appliedEffects);
   }
 
   const appliedEffect = {
     id: newId("curse"),
-    sourceTemplateId: card.templateId,
-    sourceCardId: card.id,
+    sourceTemplateId: playedCard.templateId,
+    sourceCardId: playedCard.id,
     sourcePlayerId: player.id,
     targetPlayerId: target.id,
-    effect: card.effect,
+    effect: playedCard.effect,
     startedAt: nowIso(),
-    expiresAtMs: now + (card.effect.durationSec ?? 0) * 1000,
+    expiresAtMs: now + (playedCard.effect.durationSec ?? 0) * 1000,
   };
 
   target.activeCurses.push(appliedEffect);
@@ -2286,9 +2687,9 @@ export function castCard(roomId, input) {
     type: "card.cast",
     actorId: player.id,
     data: {
-      cardId: card.id,
+      cardId: playedCard.id,
       targetPlayerId: target.id,
-      effect: card.effect,
+      effect: playedCard.effect,
     },
   });
 
@@ -2369,14 +2770,76 @@ export function postClue(roomId, input) {
     createdAt: nowIso(),
   };
   room.round.clues.push(clue);
+  appendRoomMessage(room, {
+    id: clue.id,
+    kind: "clue",
+    playerId: player.id,
+    playerName: player.name,
+    text: clue.text,
+    roundNumber: room.round.number,
+    createdAtMs: clue.createdAtMs,
+    createdAt: clue.createdAt,
+    metadata: {
+      clueId: clue.id,
+    },
+  });
 
   appendEvent(room, {
     type: "clue.shared",
     actorId: player.id,
     data: clue,
   });
+  appendEvent(room, {
+    type: "message.sent",
+    actorId: player.id,
+    data: {
+      messageId: clue.id,
+      kind: "clue",
+      text: clue.text,
+      playerId: player.id,
+      roundNumber: room.round.number,
+      createdAt: clue.createdAt,
+      metadata: {
+        clueId: clue.id,
+      },
+    },
+  });
 
   return deepCopy(clue);
+}
+
+export function postChatMessage(roomId, input) {
+  const room = requireRoom(roomId);
+  const player = requirePlayer(room, input?.playerId);
+  const text = String(input?.text ?? "").trim();
+  assert(text.length > 0 && text.length <= 500, "Message text must be 1-500 chars");
+
+  const message = appendRoomMessage(room, {
+    kind: "chat",
+    playerId: player.id,
+    playerName: player.name,
+    text,
+    roundNumber: room.round.number,
+    metadata: {
+      replyToMessageId: String(input?.replyToMessageId ?? "").trim() || null,
+    },
+  });
+
+  appendEvent(room, {
+    type: "message.sent",
+    actorId: player.id,
+    data: {
+      messageId: message.id,
+      kind: message.kind,
+      text: message.text,
+      playerId: player.id,
+      roundNumber: message.roundNumber,
+      createdAt: message.createdAt,
+      metadata: message.metadata,
+    },
+  });
+
+  return deepCopy(message);
 }
 
 export function claimCatch(roomId, input) {
@@ -2417,55 +2880,19 @@ export function claimCatch(roomId, input) {
 
   if (claim.method === "distance") {
     const evaluation = evaluateDistanceCatch(room, claim);
-    if (evaluation.canAutoResolve) {
-      appendEvent(room, {
-        type: "catch.auto_evaluated",
-        actorId: player.id,
-        data: {
-          claimId: claim.id,
-          ...evaluation,
-        },
-      });
-
-      appendEvent(room, {
-        type: "catch.resolved",
-        actorId: player.id,
-        data: {
-          claimId: claim.id,
-          result: evaluation.success ? "success" : "failed",
-          reason: evaluation.reason,
-        },
-      });
-
-      if (evaluation.success) {
-        finalizeSummary(room, {
-          winner: "seekers",
-          reason: "catch_success_distance_auto",
-          actorId: player.id,
-        });
-        return deepCopy({
-          ...claim,
-          autoResolved: true,
-          result: "success",
-          evaluation,
-          summary: room.round.summary,
-        });
-      }
-
-      const failedState = applyFailedCatchPenalty(
-        room,
-        player.id,
-        "distance_auto_failed",
-        evaluation.metrics,
-      );
-      return deepCopy({
-        ...claim,
-        autoResolved: true,
-        result: "failed",
-        evaluation,
-        state: failedState,
-      });
-    }
+    appendEvent(room, {
+      type: "catch.auto_evaluated",
+      actorId: player.id,
+      data: {
+        claimId: claim.id,
+        ...evaluation,
+      },
+    });
+    return deepCopy({
+      ...claim,
+      autoResolved: false,
+      evaluation,
+    });
   }
 
   return deepCopy({ ...claim, autoResolved: false });
@@ -2520,8 +2947,23 @@ export function resolveCatch(roomId, input) {
 export function nextRound(roomId, input) {
   const room = requireRoom(roomId);
   assert(room.phase === Phase.SUMMARY, "next-round can be called only in Summary");
-  if (input?.playerId) {
-    requirePlayer(room, input.playerId);
+  const actor = input?.playerId ? requirePlayer(room, input.playerId) : null;
+  if (actor) {
+    actor.nextRoundReady = true;
+  }
+
+  const everyoneReadyForNextRound =
+    room.players.length > 0 &&
+    room.players.every((player) => Boolean(player.nextRoundReady));
+
+  if (!everyoneReadyForNextRound) {
+    return {
+      roomId: room.id,
+      phase: room.phase,
+      waiting: true,
+      nextRoundNumber: room.round.number + 1,
+      readyPlayerIds: room.players.filter((player) => Boolean(player.nextRoundReady)).map((player) => player.id),
+    };
   }
 
   rotateRoles(room);
@@ -2535,6 +2977,7 @@ export function nextRound(roomId, input) {
   room.disputes = room.disputes.filter((item) => item.status !== "open");
   room.players.forEach((player) => {
     player.ready = false;
+    player.nextRoundReady = false;
     player.inTransit = false;
     player.activeCurses = player.activeCurses.filter((effect) => effect.expiresAtMs > nowMs());
   });
@@ -2557,6 +3000,10 @@ export function nextRound(roomId, input) {
 export function projectRoom(roomId, playerId) {
   const room = requireRoom(roomId);
   const viewer = requirePlayer(room, playerId);
+  const mapProvider = syncResolvedMapProvider(room, viewer.lastLocation ?? null);
+  const viewerPreparedNextRound = room.phase === Phase.SUMMARY && Boolean(viewer.nextRoundReady);
+  const projectedPhase = viewerPreparedNextRound ? Phase.LOBBY : room.phase;
+  const waitingForNextRound = room.phase === Phase.SUMMARY && room.players.some((player) => !player.nextRoundReady);
   const capabilities = buildPlayerCapabilities(room, viewer);
   const allowedActions = buildAllowedActions(capabilities);
   const pendingQuestion = room.round.questions.find((item) => item.id === room.round.pendingQuestionId) ?? null;
@@ -2568,15 +3015,21 @@ export function projectRoom(roomId, playerId) {
     name: room.name,
     scale: room.scale,
     mode: room.mode,
-    mapProvider: room.mapProvider,
+    mapProvider,
     mapSource: room.mapSource,
     transitPackId: room.transitPackId,
     expansionEnabled: room.expansionEnabled,
     config: room.config,
-    phase: room.phase,
+    phase: projectedPhase,
+    viewerPreparedNextRound,
+    waitingForNextRound,
+    nextRoundReadyPlayerIds: room.players
+      .filter((player) => Boolean(player.nextRoundReady))
+      .map((player) => player.id),
     paused: room.pause,
     rules: room.rules,
     round: {
+      phase: projectedPhase,
       number: room.round.number,
       hideEndsAt: room.round.hideEndsAtMs ? new Date(room.round.hideEndsAtMs).toISOString() : null,
       seekEndsAt: room.round.seekEndsAtMs ? new Date(room.round.seekEndsAtMs).toISOString() : null,
@@ -2588,10 +3041,10 @@ export function projectRoom(roomId, playerId) {
           : viewer.role === Role.HIDER
             ? room.round.hiderFixedSpot
             : null,
-      pendingQuestion,
-      pendingRewardChoice,
+      pendingQuestion: viewerPreparedNextRound ? null : pendingQuestion,
+      pendingRewardChoice: viewerPreparedNextRound ? null : pendingRewardChoice,
       pendingCatchClaim: room.round.pendingCatchClaim,
-      summary: room.round.summary,
+      summary: viewerPreparedNextRound ? null : room.round.summary,
       seekDurationSecCurrent: computeSeekDurationSec(room),
       clues: room.round.clues ?? [],
     },
@@ -2599,18 +3052,20 @@ export function projectRoom(roomId, playerId) {
       id: player.id,
       name: player.name,
       role: player.role,
-      ready: player.ready,
+      ready: viewerPreparedNextRound ? false : player.ready,
+      nextRoundReady: Boolean(player.nextRoundReady),
       inTransit: player.inTransit,
       activeCurses: player.id === viewer.id || viewer.role === Role.OBSERVER ? player.activeCurses : undefined,
       location: projectedLocation(viewer.role, player, room),
     })),
-    mapAnnotations: viewer.role === Role.HIDER ? [] : room.mapAnnotations,
+    mapAnnotations: room.mapAnnotations,
     events: projectEvents(room, viewer.role),
     hand: viewer.hand,
     capabilities,
     allowedActions,
     disputes: room.disputes,
     evidence: room.evidence,
+    messages: room.messages ?? [],
     gameEndsAt: room.gameEndsAtMs ? new Date(room.gameEndsAtMs).toISOString() : null,
     scores: room.scores,
   };
@@ -2733,19 +3188,6 @@ export function tick(now = nowMs()) {
         }
       }
 
-      if (
-        room.phase === Phase.CAUGHT &&
-        room.round.pendingCatchClaim &&
-        now >= room.round.pendingCatchClaim.expiresAtMs
-      ) {
-        appendEvent(room, {
-          type: "catch.timeout_auto_failed",
-          data: {
-            claimId: room.round.pendingCatchClaim.id,
-          },
-        });
-        applyFailedCatchPenalty(room, null, "catch_response_timeout");
-      }
     }
 
     for (const player of room.players) {

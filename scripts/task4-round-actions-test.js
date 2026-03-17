@@ -156,19 +156,34 @@ async function main() {
       accuracy: 8,
     });
 
+    const seekerView = await request("GET", `/rooms/${encodeURIComponent(code)}?playerId=${encodeURIComponent(seekerId)}`);
+    const seekerPlayers = Array.isArray(seekerView?.room?.players) ? seekerView.room.players : [];
+    const visibleHider = seekerPlayers.find((player) => player?.id === hiderId);
+    assert(
+      Number.isFinite(Number(visibleHider?.location?.lat)) && Number.isFinite(Number(visibleHider?.location?.lng)),
+      "seeker room view should include hider location once it has been reported",
+    );
+
     const catchResult = await request("POST", `/rounds/${encodeURIComponent(code)}/claimCatch`, {
       playerId: seekerId,
       targetPlayerId: hiderId,
       method: "distance",
       visualConfirmed: true,
     });
+    const claimId = catchResult?.result?.id;
+    assert(claimId, "claimCatch should return a pending catch claim id");
+    assert(catchResult?.projection?.phase === "CAUGHT", "claimCatch should move room into CAUGHT review state");
 
-    assert(catchResult?.projection?.phase === "SUMMARY", "claimCatch should drive room to SUMMARY");
+    const resolved = await request("POST", `/rooms/${encodeURIComponent(code)}/catch/${encodeURIComponent(claimId)}/respond`, {
+      playerId: hiderId,
+      result: "success",
+    });
+    assert(resolved?.result?.phase === "Summary" || resolved?.result?.phase === "SUMMARY", "resolved catch should drive room to SUMMARY");
 
     console.log("TASK4_TEST_OK", {
       code,
-      phase: catchResult.projection.phase,
-      cursor: catchResult.cursor,
+      phase: resolved?.result?.phase ?? catchResult?.projection?.phase,
+      cursor: catchResult.cursor ?? null,
       usedCastCurse: Boolean(curse?.id),
     });
   } finally {
