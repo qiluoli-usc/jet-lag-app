@@ -97,7 +97,7 @@ export function deriveCountdownTarget(phase: FrontPhase, events: RoomEvent[]): C
 
 export function formatRemaining(ms: number): string {
   const safeMs = Math.max(0, ms);
-  const totalSec = Math.floor(safeMs / 1000);
+  const totalSec = Math.ceil(safeMs / 1000);
   const hours = Math.floor(totalSec / 3600);
   const minutes = Math.floor((totalSec % 3600) / 60);
   const seconds = totalSec % 60;

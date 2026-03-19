@@ -26,6 +26,9 @@ interface PhaseRouterProps {
   onPrepareNextRound: () => void;
   onUpdateRoomConfig: (payload: {
     transitPackId?: string | null;
+    regionPresetId?: string | null;
+    regionPresetName?: string | null;
+    hideDurationSec?: number | null;
     borderPolygonGeoJSON?: Record<string, unknown> | null;
     hidingAreaGeoJSON?: Record<string, unknown> | null;
   }) => Promise<void>;
@@ -88,6 +91,7 @@ export function PhaseRouter({
       playerId={playerId}
       mapProvider={projection?.mapProvider}
       transitPackId={projection?.transitPackId}
+      config={projection?.config as Record<string, unknown> | null | undefined}
       borderPolygonGeoJSON={projection?.config?.borderPolygonGeoJSON as Record<string, unknown> | null | undefined}
       hidingAreaGeoJSON={projection?.config?.hidingAreaGeoJSON as Record<string, unknown> | null | undefined}
       transitPacks={transitPacks}

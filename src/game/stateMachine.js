@@ -187,6 +187,51 @@ function firstGeoJsonPoint(value) {
   return null;
 }
 
+function geoJsonPolygonPoints(value) {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const geometry = String(value.type ?? "").toLowerCase() === "feature"
+    ? (value.geometry ?? null)
+    : value;
+  const coordinates = Array.isArray(geometry?.coordinates) ? geometry.coordinates : [];
+  const ring = Array.isArray(coordinates[0]) ? coordinates[0] : [];
+  const points = [];
+  for (const entry of ring) {
+    if (!Array.isArray(entry) || entry.length < 2) {
+      continue;
+    }
+    const lng = Number(entry[0]);
+    const lat = Number(entry[1]);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      points.push({ lat, lng });
+    }
+  }
+  if (points.length >= 2) {
+    const first = points[0];
+    const last = points[points.length - 1];
+    if (first.lat === last.lat && first.lng === last.lng) {
+      return points.slice(0, -1);
+    }
+  }
+  return points;
+}
+
+function geoJsonPolygonCenter(value) {
+  const points = geoJsonPolygonPoints(value);
+  if (points.length === 0) {
+    return null;
+  }
+  const totals = points.reduce((acc, point) => ({
+    lat: acc.lat + point.lat,
+    lng: acc.lng + point.lng,
+  }), { lat: 0, lng: 0 });
+  return {
+    lat: totals.lat / points.length,
+    lng: totals.lng / points.length,
+  };
+}
+
 function isLikelyMainlandChinaPoint(point) {
   if (!point) {
     return false;
@@ -262,6 +307,35 @@ function resolveTransitPackId(value, { fallbackToDefault = true } = {}) {
   }
   assert(getTransitPack(normalized), `Transit pack not found: ${normalized}`, 400);
   return normalized;
+}
+
+function normalizeHideDurationSec(value, fallbackSec) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallbackSec;
+  }
+  return Math.max(0, Math.min(4 * 60 * 60, Math.round(parsed)));
+}
+
+function resolveRoomSearchAnchor(room) {
+  const boundaryCenter = geoJsonPolygonCenter(
+    room.borderPolygonGeoJSON ?? room.mapBoundary ?? room.config?.borderPolygonGeoJSON ?? null,
+  );
+  if (boundaryCenter) {
+    return boundaryCenter;
+  }
+  const hidingAreaCenter = geoJsonPolygonCenter(room.hidingAreaGeoJSON ?? room.config?.hidingAreaGeoJSON ?? null);
+  if (hidingAreaCenter) {
+    return hidingAreaCenter;
+  }
+  const transitPack = getTransitPack(room.transitPackId);
+  if (Array.isArray(transitPack?.stops) && transitPack.stops[0]) {
+    return {
+      lat: Number(transitPack.stops[0].lat),
+      lng: Number(transitPack.stops[0].lng),
+    };
+  }
+  return { lat: 31.2304, lng: 121.4737 };
 }
 
 function normalizeGeoJsonConfig(value, fieldName) {
@@ -1158,7 +1232,11 @@ function rotateRoles(room) {
 export function createRoom(input = {}) {
   const roomId = newId("room");
   const scale = normalizeScale(input.scale);
-  const rules = buildRulesForScale(scale, input.rules ?? {});
+  const initialHideDurationSec = normalizeHideDurationSec(input.hideDurationSec ?? input?.rules?.hideDurationSec, null);
+  const rules = buildRulesForScale(scale, {
+    ...(input.rules ?? {}),
+    ...(Number.isFinite(initialHideDurationSec) ? { hideDurationSec: initialHideDurationSec } : {}),
+  });
   const transitPackId = resolveTransitPackId(input.transitPackId, { fallbackToDefault: true });
   const borderPolygonGeoJSON = normalizeGeoJsonConfig(
     input.borderPolygonGeoJSON ?? input.mapBoundary ?? null,
@@ -1168,6 +1246,8 @@ export function createRoom(input = {}) {
     input.hidingAreaGeoJSON ?? input.hideAreaGeoJSON ?? null,
     "hidingAreaGeoJSON",
   );
+  const regionPresetId = String(input.regionPresetId ?? "").trim() || null;
+  const regionPresetName = String(input.regionPresetName ?? "").trim() || null;
   const room = {
     id: roomId,
     name: input.name ?? `Room ${roomId.slice(-4)}`,
@@ -1186,6 +1266,9 @@ export function createRoom(input = {}) {
       scale: scale.toUpperCase(),
       mapProvider: rules.mapSource,
       transitPackId,
+      regionPresetId,
+      regionPresetName,
+      hideDurationSec: rules.hideDurationSec,
       enableExpansionPackV1: Boolean(input.expansionEnabled ?? true),
       borderPolygonGeoJSON,
       hidingAreaGeoJSON,
@@ -1290,19 +1373,42 @@ export function updateRoomConfig(roomId, input = {}) {
       room.hidingAreaGeoJSON ?? room.config?.hidingAreaGeoJSON ?? null,
       "hidingAreaGeoJSON",
     );
+  const hideDurationSec = normalizeHideDurationSec(
+    Object.prototype.hasOwnProperty.call(input, "hideDurationSec")
+      ? input.hideDurationSec
+      : room.rules?.hideDurationSec,
+    room.rules?.hideDurationSec ?? scalePreset(room.scale).hideDurationSec,
+  );
+  const regionPresetId = Object.prototype.hasOwnProperty.call(input, "regionPresetId")
+    ? (String(input.regionPresetId ?? "").trim() || null)
+    : (String(room.config?.regionPresetId ?? "").trim() || null);
+  const regionPresetName = Object.prototype.hasOwnProperty.call(input, "regionPresetName")
+    ? (String(input.regionPresetName ?? "").trim() || null)
+    : (String(room.config?.regionPresetName ?? "").trim() || null);
 
   room.transitPackId = transitPackId;
   room.mapBoundary = borderPolygonGeoJSON;
   room.borderPolygonGeoJSON = borderPolygonGeoJSON;
   room.hidingAreaGeoJSON = hidingAreaGeoJSON;
+  room.rules = {
+    ...room.rules,
+    hideDurationSec,
+  };
   room.updatedAt = nowIso();
   const mapProvider = syncResolvedMapProvider(room);
   room.config = {
     ...(room.config ?? {}),
     mapProvider,
     transitPackId,
+    regionPresetId,
+    regionPresetName,
+    hideDurationSec,
     borderPolygonGeoJSON,
     hidingAreaGeoJSON,
+    timers: {
+      ...(room.config?.timers ?? {}),
+      hideSeconds: hideDurationSec,
+    },
   };
 
   appendEvent(room, {
@@ -1364,22 +1470,29 @@ export async function searchRoomPlaces(roomId, input) {
   const query = String(input?.query ?? "").trim();
   const radiusM = Number(input?.radiusM ?? 5000);
   let center = input?.center ?? null;
+  const searchAnchor = resolveRoomSearchAnchor(room);
   if (!center && input?.playerId) {
     const viewer = requirePlayer(room, input.playerId);
     if (viewer.lastLocation) {
-      center = {
+      const viewerCenter = {
         lat: viewer.lastLocation.lat,
         lng: viewer.lastLocation.lng,
       };
+      center = haversineMeters(viewerCenter, searchAnchor) <= 25_000
+        ? viewerCenter
+        : searchAnchor;
     }
   }
   if (!center) {
-    center = { lat: 31.2304, lng: 121.4737 };
+    center = searchAnchor;
   }
 
   const mapProvider = syncResolvedMapProvider(room, center);
   const adapter = roomMapAdapter(room, center);
-  const places = await adapter.searchPlaces(query, center, radiusM);
+  let places = await adapter.searchPlaces(query, center, radiusM);
+  if (places.length === 0 && query) {
+    places = await adapter.searchPlaces(query, center, Math.max(radiusM, 3_000_000));
+  }
   return deepCopy({
     mapProvider,
     query,
@@ -1514,6 +1627,8 @@ export function completeEvidenceUpload(roomId, input) {
     ...(item.metadata ?? {}),
     ...(input?.metadata ?? {}),
   };
+  const owner = room.players.find((entry) => entry.id === item.actorPlayerId) ?? actor;
+  const messageText = String(item.metadata?.note ?? "").trim() || `Shared ${item.type === "photo" ? "a photo" : `${item.type} evidence`}`;
 
   appendEvent(room, {
     type: "evidence.upload.completed",
@@ -1522,6 +1637,35 @@ export function completeEvidenceUpload(roomId, input) {
       evidenceId: item.evidenceId,
       storageKey: item.storageKey,
       sizeBytes: item.sizeBytes,
+    },
+  });
+  const message = appendRoomMessage(room, {
+    kind: "evidence",
+    playerId: owner.id,
+    playerName: owner.name,
+    text: messageText,
+    roundNumber: room.round.number,
+    metadata: {
+      evidenceId: item.evidenceId,
+      evidenceType: item.type,
+      mimeType: item.mimeType,
+      fileName: item.fileName,
+      sizeBytes: item.sizeBytes,
+      viewUrl: item.viewUrl,
+      note: String(item.metadata?.note ?? "").trim() || null,
+    },
+  });
+  appendEvent(room, {
+    type: "message.sent",
+    actorId: owner.id,
+    data: {
+      messageId: message.id,
+      kind: message.kind,
+      text: message.text,
+      playerId: owner.id,
+      roundNumber: message.roundNumber,
+      createdAt: message.createdAt,
+      metadata: message.metadata,
     },
   });
 

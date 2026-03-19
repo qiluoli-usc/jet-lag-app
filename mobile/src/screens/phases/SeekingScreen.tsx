@@ -345,6 +345,17 @@ function getLayerColor(layer: string): { stroke: string; fill: string } {
   return { stroke: "#0a5f66", fill: "rgba(10,95,102,0.16)" };
 }
 
+function annotationKeyOf(item: Record<string, unknown>): string {
+  const explicit = String(item.annotationId ?? item.id ?? "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  const layer = String(item.layer ?? "possible_area");
+  const label = String(item.label ?? "annotation");
+  const createdAt = String(item.createdAt ?? "");
+  return `${layer}:${label}:${createdAt}`;
+}
+
 function getTabItems(role: string): Array<{ key: TabKey; label: string }> {
   if (role === "seeker") {
     return SEEKER_TABS;
@@ -539,7 +550,7 @@ export function SeekingScreen({
   const [annotationLayer, setAnnotationLayer] = useState("possible_area");
   const [annotationLabel, setAnnotationLabel] = useState("possible_area");
   const [circleRadiusText, setCircleRadiusText] = useState("250");
-  const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
+  const [annotationVisibility, setAnnotationVisibility] = useState<Record<string, boolean>>({});
   const [showBoundaryLayer, setShowBoundaryLayer] = useState(true);
   const [showHidingAreaLayer, setShowHidingAreaLayer] = useState(true);
   const [showPlayerMarkers, setShowPlayerMarkers] = useState(true);
@@ -744,14 +755,15 @@ export function SeekingScreen({
         circle: { center: LatLng; radiusM: number };
       } => Boolean(item.circle));
   }, [mapAnnotations]);
-  const annotationLayerItems = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const item of mapAnnotations) {
-      const layer = String(item.layer ?? "possible_area");
-      counts.set(layer, Number(counts.get(layer) ?? 0) + 1);
-    }
-    return [...counts.entries()].map(([layer, count]) => ({ layer, count }));
-  }, [mapAnnotations]);
+  const annotationLayerItems = useMemo(
+    () => mapAnnotations.map((item) => ({
+      key: annotationKeyOf(item),
+      layer: String(item.layer ?? "possible_area"),
+      label: String(item.label ?? "annotation"),
+      geometryType: String(item.geometryType ?? "polygon"),
+    })),
+    [mapAnnotations],
+  );
   const configBoundaryPoints = useMemo(
     () => extractConfigPolygonPoints(projection?.config?.borderPolygonGeoJSON),
     [projection?.config],
@@ -769,6 +781,7 @@ export function SeekingScreen({
   }, [pendingRewardChoice]);
   const pendingCatchClaim = useMemo(() => asRecord(projection?.round?.pendingCatchClaim), [projection?.round?.pendingCatchClaim]);
   const pendingCatchClaimId = typeof pendingCatchClaim.id === "string" ? pendingCatchClaim.id : "";
+  const showCatchReviewPrompt = Boolean(pendingCatchClaimId) && (isHider || meRole === "observer");
   const seekElapsedSeconds = Number(projection?.round?.seekDurationSecCurrent ?? 0);
   const liveSeekElapsedSeconds = useMemo(() => {
     const phase = String(projection?.phase ?? "").toUpperCase();
@@ -811,24 +824,17 @@ export function SeekingScreen({
     }
     return total;
   }, [draftEffectivePolygon]);
-  const visibleLayerLookup = useMemo(() => {
-    const lookup: Record<string, boolean> = {};
-    for (const item of annotationLayerItems) {
-      lookup[item.layer] = layerVisibility[item.layer] !== false;
-    }
-    return lookup;
-  }, [annotationLayerItems, layerVisibility]);
   const visibleAnnotationPolygons = useMemo(
-    () => annotationPolygons.filter((item) => visibleLayerLookup[item.layer] !== false),
-    [annotationPolygons, visibleLayerLookup],
+    () => annotationPolygons.filter((item) => annotationVisibility[item.id] !== false),
+    [annotationPolygons, annotationVisibility],
   );
   const visibleAnnotationLines = useMemo(
-    () => annotationLines.filter((item) => visibleLayerLookup[item.layer] !== false),
-    [annotationLines, visibleLayerLookup],
+    () => annotationLines.filter((item) => annotationVisibility[item.id] !== false),
+    [annotationLines, annotationVisibility],
   );
   const visibleAnnotationCircles = useMemo(
-    () => annotationCircles.filter((item) => visibleLayerLookup[item.layer] !== false),
-    [annotationCircles, visibleLayerLookup],
+    () => annotationCircles.filter((item) => annotationVisibility[item.id] !== false),
+    [annotationCircles, annotationVisibility],
   );
   const circleOnlyMode = capabilities.mapToolMode === "circle_only";
 
@@ -845,11 +851,11 @@ export function SeekingScreen({
   }, [composerMode, isHider]);
 
   useEffect(() => {
-    setLayerVisibility((prev) => {
+    setAnnotationVisibility((prev) => {
       const next = { ...prev };
       for (const item of annotationLayerItems) {
-        if (!Object.prototype.hasOwnProperty.call(next, item.layer)) {
-          next[item.layer] = true;
+        if (!Object.prototype.hasOwnProperty.call(next, item.key)) {
+          next[item.key] = true;
         }
       }
       return next;
@@ -1061,16 +1067,9 @@ export function SeekingScreen({
     setPoiError(null);
 
     try {
-      const center = mapRegion
-        ? { lat: mapRegion.latitude, lng: mapRegion.longitude }
-        : myLocation
-          ? { lat: myLocation.latitude, lng: myLocation.longitude }
-          : null;
-
       const response = await searchRoomPlaces(httpBaseUrl, roomCode, {
         playerId,
         query: poiQuery.trim(),
-        center,
         radiusM: 5000,
       });
 
@@ -1082,7 +1081,7 @@ export function SeekingScreen({
     } finally {
       setPoiLoading(false);
     }
-  }, [httpBaseUrl, mapRegion, myLocation, playerId, poiQuery, roomCode]);
+  }, [httpBaseUrl, playerId, poiQuery, roomCode]);
 
   const handleInspectPlace = useCallback(async (place: MapPlace) => {
     const placeId = String(place.placeId ?? "").trim();
@@ -1819,6 +1818,27 @@ export function SeekingScreen({
         </Pressable>
       ) : null}
 
+      {showCatchReviewPrompt ? (
+        <View style={[styles.callout, styles.calloutCatchReview]}>
+          <Text style={styles.calloutTitle}>Catch claim pending review</Text>
+          <Text style={styles.calloutBody}>
+            A seeker has submitted a catch claim. Decide here whether the round should end.
+          </Text>
+          <Text style={styles.calloutMeta}>
+            Claim {pendingCatchClaimId} | Expires {formatClock(pendingCatchClaim.expiresAt)}
+          </Text>
+          <Text style={styles.calloutBody}>{shortJson(pendingCatchClaim.evaluation ?? pendingCatchClaim.details)}</Text>
+          <View style={styles.row}>
+            <Pressable style={styles.secondaryButton} onPress={() => void handleResolveCatch("success")}>
+              <Text style={styles.secondaryButtonText}>Confirm Catch</Text>
+            </Pressable>
+            <Pressable style={styles.secondaryButton} onPress={() => void handleResolveCatch("failed")}>
+              <Text style={styles.secondaryButtonText}>Reject Catch</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
       {myActiveCurses.length > 0 ? (
         <View style={[styles.callout, styles.calloutCurse]}>
           <Text style={styles.calloutTitle}>Active curse effects</Text>
@@ -2151,23 +2171,30 @@ export function SeekingScreen({
                     Selected POI
                   </Text>
                 </Pressable>
-                {annotationLayerItems.map((item) => {
-                  const active = visibleLayerLookup[item.layer] !== false;
-                  return (
-                    <Pressable
-                      key={item.layer}
-                      style={[styles.choiceButton, active ? styles.choiceButtonActive : null]}
-                      onPress={() => setLayerVisibility((prev) => ({
-                        ...prev,
-                        [item.layer]: !(prev[item.layer] !== false),
-                      }))}
-                    >
-                      <Text style={[styles.choiceButtonText, active ? styles.choiceButtonTextActive : null]}>
-                        {item.layer} ({item.count})
-                      </Text>
-                    </Pressable>
-                  );
-                })}
+              </View>
+              <Text style={styles.subTitle}>Annotation Layers</Text>
+              <View style={styles.optionWrap}>
+                {annotationLayerItems.length === 0 ? (
+                  <Text style={styles.mutedText}>No saved annotations yet.</Text>
+                ) : (
+                  annotationLayerItems.map((item) => {
+                    const active = annotationVisibility[item.key] !== false;
+                    return (
+                      <Pressable
+                        key={item.key}
+                        style={[styles.choiceButton, active ? styles.choiceButtonActive : null]}
+                        onPress={() => setAnnotationVisibility((prev) => ({
+                          ...prev,
+                          [item.key]: !(prev[item.key] !== false),
+                        }))}
+                      >
+                        <Text style={[styles.choiceButtonText, active ? styles.choiceButtonTextActive : null]}>
+                          {item.label} · {item.layer}
+                        </Text>
+                      </Pressable>
+                    );
+                  })
+                )}
               </View>
 
               <View style={styles.separator} />
@@ -2767,6 +2794,13 @@ export function SeekingScreen({
                   String(message.playerId ?? "System");
                 const isClue = String(message.kind ?? "") === "clue";
                 const isOwn = String(message.playerId ?? "") === playerId;
+                const messageMetadata = asRecord(message.metadata);
+                const attachmentPath = typeof messageMetadata.viewUrl === "string" ? String(messageMetadata.viewUrl) : "";
+                const attachmentMime = typeof messageMetadata.mimeType === "string" ? String(messageMetadata.mimeType) : "";
+                const attachmentUrl = attachmentPath
+                  ? (attachmentPath.startsWith("http") ? attachmentPath : `${evidenceBaseUrl}${attachmentPath}`)
+                  : null;
+                const hasImageAttachment = Boolean(attachmentUrl && attachmentMime.startsWith("image/"));
                 return (
                   <View key={String(message.id ?? message.messageId ?? message.createdAt)} style={[styles.messageRow, isOwn ? styles.messageRowOwn : styles.messageRowOther]}>
                     <View style={[styles.messageBubble, isOwn ? styles.messageBubbleOwn : isClue ? styles.messageBubbleClue : styles.messageBubbleOther]}>
@@ -2774,6 +2808,12 @@ export function SeekingScreen({
                         {isClue ? `Clue · ${senderName}` : senderName} · {formatClock(message.createdAt)}
                       </Text>
                       <Text style={[styles.messageText, isOwn ? styles.messageTextOwn : null]}>{String(message.text ?? "")}</Text>
+                      {hasImageAttachment ? (
+                        <Image source={{ uri: attachmentUrl ?? "" }} style={styles.evidenceThumbnail} resizeMode="cover" />
+                      ) : null}
+                      {!hasImageAttachment && attachmentUrl ? (
+                        <Text style={[styles.logData, isOwn ? styles.messageTextOwn : null]}>Attachment: {attachmentUrl}</Text>
+                      ) : null}
                     </View>
                   </View>
                 );
@@ -3056,6 +3096,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#e0eff5",
     borderColor: "#8caec0",
   },
+  calloutCatchReview: {
+    backgroundColor: "#fff1f2",
+    borderColor: "#fecdd3",
+  },
   calloutCurse: {
     backgroundColor: "#fff3df",
     borderColor: "#d59f3d",
@@ -3069,6 +3113,12 @@ const styles = StyleSheet.create({
   calloutBody: {
     fontSize: 13,
     color: "#4f4f4f",
+  },
+  calloutMeta: {
+    fontSize: 12,
+    color: "#881337",
+    marginTop: 6,
+    marginBottom: 6,
   },
   tabsRow: {
     gap: 8,
@@ -3152,6 +3202,12 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#4f4f4f",
     textTransform: "uppercase",
+  },
+  subTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: "#4f4f4f",
+    marginTop: 2,
   },
   statusCard: {
     borderRadius: 10,

@@ -216,7 +216,7 @@ export function HomeScreen({
           })}
         </View>
         <Text style={styles.helperText}>
-          POI lookup provider is now chosen automatically from player location and the room's transit context. You only need to pick a transit pack here.
+          POI lookup provider is chosen automatically. Detailed district range and hide duration are configured inside the Lobby after you create the room.
         </Text>
 
         <Text style={styles.sectionTitle}>Transit Pack</Text>

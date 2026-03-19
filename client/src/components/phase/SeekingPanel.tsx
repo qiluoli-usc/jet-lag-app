@@ -1,4 +1,4 @@
-import { ChangeEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addMapAnnotation,
   castPlayerCard,
@@ -343,6 +343,17 @@ function defaultLayerForTool(tool: DrawTool): string {
   return "possible_area";
 }
 
+function annotationKeyOf(item: Record<string, unknown>): string {
+  const explicit = String(item.annotationId ?? item.id ?? "").trim();
+  if (explicit) {
+    return explicit;
+  }
+  const layer = String(item.layer ?? "possible_area");
+  const label = String(item.label ?? "annotation");
+  const createdAt = String(item.createdAt ?? "");
+  return `${layer}:${label}:${createdAt}`;
+}
+
 function samePoint(a: Point | null, b: Point | null) {
   if (!a || !b) {
     return false;
@@ -413,7 +424,7 @@ export function SeekingPanel({
   const [manualLng, setManualLng] = useState("");
   const [circleRadiusText, setCircleRadiusText] = useState("150");
   const [draftPoints, setDraftPoints] = useState<Point[]>([]);
-  const [layerVisibility, setLayerVisibility] = useState<Record<string, boolean>>({});
+  const [annotationVisibility, setAnnotationVisibility] = useState<Record<string, boolean>>({});
   const [mapQuery, setMapQuery] = useState("");
   const [mapRadiusText, setMapRadiusText] = useState("1500");
   const [mapError, setMapError] = useState<string | null>(null);
@@ -451,6 +462,8 @@ export function SeekingPanel({
   const [composerMode, setComposerMode] = useState<"chat" | "clue">("chat");
   const [chatBusy, setChatBusy] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  const autoLocationWatchRef = useRef<number | null>(null);
+  const lastAutoLocationRef = useRef<{ lat: number; lng: number; reportedAtMs: number } | null>(null);
 
   const pendingQuestion = useMemo(() => getPendingQuestion(projection), [projection]);
   const pendingRewardChoice = useMemo(() => getPendingRewardChoice(projection), [projection]);
@@ -585,6 +598,86 @@ export function SeekingPanel({
     setSeekElapsedSyncedAtMs(Date.now());
   }, [projection?.phase, projection?.round?.seekDurationSecCurrent]);
 
+  const reportBrowserLocation = useCallback(async (
+    coords: Pick<GeolocationCoordinates, "latitude" | "longitude" | "accuracy">,
+    options: { silent?: boolean } = {},
+  ) => {
+    const now = Date.now();
+    const previous = lastAutoLocationRef.current;
+    const nextPoint = { lat: coords.latitude, lng: coords.longitude };
+    if (
+      previous &&
+      now - previous.reportedAtMs < 5000 &&
+      distanceMeters({ lat: previous.lat, lng: previous.lng }, nextPoint) < 10
+    ) {
+      return;
+    }
+
+    if (!options.silent) {
+      setLocationBusy(true);
+      setLocationError(null);
+    }
+
+    try {
+      await updatePlayerLocation(roomCode, {
+        playerId,
+        lat: coords.latitude,
+        lng: coords.longitude,
+        accuracy: coords.accuracy,
+      });
+      lastAutoLocationRef.current = {
+        lat: coords.latitude,
+        lng: coords.longitude,
+        reportedAtMs: now,
+      };
+      if (!options.silent) {
+        await onRefreshProjection();
+      }
+    } catch (caught) {
+      if (!options.silent) {
+        setLocationError(caught instanceof Error ? caught.message : "Location update failed");
+      }
+    } finally {
+      if (!options.silent) {
+        setLocationBusy(false);
+      }
+    }
+  }, [onRefreshProjection, playerId, roomCode]);
+
+  useEffect(() => {
+    const phase = String(projection?.phase ?? "").toUpperCase();
+    const inSeekingWindow = phase === "SEEK" || phase === "SEEKING" || phase === "CAUGHT" || phase === "ENDGAME" || phase === "END_GAME";
+    const canAutoReport = meRole === "hider" || meRole === "seeker";
+    if (!inSeekingWindow || !canAutoReport || !navigator.geolocation) {
+      if (autoLocationWatchRef.current !== null) {
+        navigator.geolocation.clearWatch(autoLocationWatchRef.current);
+        autoLocationWatchRef.current = null;
+      }
+      return undefined;
+    }
+
+    autoLocationWatchRef.current = navigator.geolocation.watchPosition(
+      (position) => {
+        void reportBrowserLocation(position.coords, { silent: true });
+      },
+      (error) => {
+        setLocationError(error.message || "Browser geolocation permission denied");
+      },
+      {
+        enableHighAccuracy: true,
+        maximumAge: 5000,
+        timeout: 15000,
+      },
+    );
+
+    return () => {
+      if (autoLocationWatchRef.current !== null) {
+        navigator.geolocation.clearWatch(autoLocationWatchRef.current);
+        autoLocationWatchRef.current = null;
+      }
+    };
+  }, [meRole, projection?.phase, reportBrowserLocation]);
+
   useEffect(() => {
     setAnnotationLayer(defaultLayerForTool(drawTool));
   }, [drawTool]);
@@ -698,18 +791,27 @@ export function SeekingPanel({
     [players],
   );
   const allLayerNames = useMemo(() => [...new Set([...LAYER_OPTIONS, ...mapAnnotations.map((item) => String(item.layer ?? "possible_area"))])], [mapAnnotations]);
+  const annotationToggleItems = useMemo(
+    () => mapAnnotations.map((item) => ({
+      key: annotationKeyOf(item),
+      layer: String(item.layer ?? "possible_area"),
+      label: asText(item.label, "annotation"),
+      geometryType: asText(item.geometryType, "polygon"),
+    })),
+    [mapAnnotations],
+  );
 
   useEffect(() => {
-    setLayerVisibility((prev) => {
+    setAnnotationVisibility((prev) => {
       const next = { ...prev };
-      for (const layer of allLayerNames) {
-        if (!Object.prototype.hasOwnProperty.call(next, layer)) {
-          next[layer] = true;
+      for (const item of annotationToggleItems) {
+        if (!Object.prototype.hasOwnProperty.call(next, item.key)) {
+          next[item.key] = true;
         }
       }
       return next;
     });
-  }, [allLayerNames]);
+  }, [annotationToggleItems]);
 
   const selectedPlacePoint = useMemo(() => (selectedPlace ? toPlaceCenter(selectedPlace) : null), [selectedPlace]);
   const allPlotPoints = useMemo(() => {
@@ -752,8 +854,8 @@ export function SeekingPanel({
     return total;
   }, [draftEffectivePoints]);
   const visibleAnnotations = useMemo(
-    () => mapAnnotations.filter((item) => layerVisibility[String(item.layer ?? "possible_area")] !== false),
-    [layerVisibility, mapAnnotations],
+    () => mapAnnotations.filter((item) => annotationVisibility[annotationKeyOf(item)] !== false),
+    [annotationVisibility, mapAnnotations],
   );
   const mapSearchRadius = parsePositiveInt(mapRadiusText, 1500, 100, 10000);
   const distanceFromMeToSelectedPlace = useMemo(() => {
@@ -762,6 +864,7 @@ export function SeekingPanel({
   }, [me?.location, selectedPlacePoint]);
   const pendingCatchClaim = useMemo(() => asRecord(projection?.round?.pendingCatchClaim), [projection?.round?.pendingCatchClaim]);
   const pendingCatchClaimId = typeof pendingCatchClaim.id === "string" ? pendingCatchClaim.id : "";
+  const showCatchReviewPrompt = Boolean(pendingCatchClaimId) && (isHider || meRole === "observer");
   const seekElapsedSeconds = Number(projection?.round?.seekDurationSecCurrent ?? 0);
   const liveSeekElapsedSeconds = useMemo(() => {
     const phase = String(projection?.phase ?? "").toUpperCase();
@@ -881,11 +984,9 @@ export function SeekingPanel({
     setMapBusy(true);
     setMapError(null);
     try {
-      const center = pointFromUnknown(me?.location);
       const response = await searchRoomPlaces(roomCode, {
         playerId,
         query: mapQuery.trim() || undefined,
-        center,
         radiusM: mapSearchRadius,
       });
       setPlaceResults(Array.isArray(response.places.places) ? response.places.places : []);
@@ -895,7 +996,7 @@ export function SeekingPanel({
     } finally {
       setMapBusy(false);
     }
-  }, [mapQuery, mapSearchRadius, me?.location, playerId, roomCode]);
+  }, [mapQuery, mapSearchRadius, playerId, roomCode]);
 
   const handleInspectPlace = useCallback(async (place: MapPlace) => {
     setSelectedPlace(place);
@@ -932,8 +1033,6 @@ export function SeekingPanel({
       setLocationError("Browser geolocation is unavailable");
       return;
     }
-    setLocationBusy(true);
-    setLocationError(null);
     try {
       const position = await new Promise<GeolocationPosition>((resolve, reject) => {
         navigator.geolocation.getCurrentPosition(resolve, reject, {
@@ -942,19 +1041,11 @@ export function SeekingPanel({
           timeout: 10000,
         });
       });
-      await updatePlayerLocation(roomCode, {
-        playerId,
-        lat: position.coords.latitude,
-        lng: position.coords.longitude,
-        accuracy: position.coords.accuracy,
-      });
-      await onRefreshProjection();
+      await reportBrowserLocation(position.coords);
     } catch (caught) {
       setLocationError(caught instanceof Error ? caught.message : "Location update failed");
-    } finally {
-      setLocationBusy(false);
     }
-  }, [onRefreshProjection, playerId, roomCode]);
+  }, [reportBrowserLocation]);
 
   const handleAsk = useCallback(async () => {
     if (askReason) {
@@ -1534,12 +1625,25 @@ export function SeekingPanel({
                 <input type="checkbox" checked={showSelectedPlaceMarker} onChange={(event) => setShowSelectedPlaceMarker(event.target.checked)} />
                 Selected POI
               </label>
-              {allLayerNames.map((layer) => (
-                <label key={layer} className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-1.5 text-sm">
-                  <input type="checkbox" checked={layerVisibility[layer] !== false} onChange={(event) => setLayerVisibility((prev) => ({ ...prev, [layer]: event.target.checked }))} />
-                  {layer}
-                </label>
-              ))}
+            </div>
+            <div className="mt-3 rounded-xl border border-black/10 bg-white p-3">
+              <p className="font-mono text-xs uppercase tracking-[0.14em] text-black/45">Annotation Layers</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {annotationToggleItems.length === 0 ? (
+                  <p className="text-sm text-black/55">No saved annotations yet.</p>
+                ) : (
+                  annotationToggleItems.map((item) => (
+                    <label key={item.key} className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-surface px-3 py-1.5 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={annotationVisibility[item.key] !== false}
+                        onChange={(event) => setAnnotationVisibility((prev) => ({ ...prev, [item.key]: event.target.checked }))}
+                      />
+                      {item.label} · {item.layer}
+                    </label>
+                  ))
+                )}
+              </div>
             </div>
             <div className="mt-3 grid gap-2">
               {placeResults.length === 0 ? (
@@ -1939,6 +2043,10 @@ export function SeekingPanel({
               sortedMessages.map((message, index) => {
                 const own = String(message.playerId ?? "") === playerId;
                 const kind = asText(message.kind, "chat");
+                const metadata = asRecord(message.metadata);
+                const attachmentUrl = typeof metadata.viewUrl === "string" ? metadata.viewUrl : null;
+                const attachmentMime = typeof metadata.mimeType === "string" ? metadata.mimeType : null;
+                const hasImageAttachment = Boolean(attachmentUrl && attachmentMime?.startsWith("image/"));
                 return (
                   <div key={String(message.id ?? message.messageId ?? index)} className={`flex ${own ? "justify-end" : "justify-start"}`}>
                     <article className={`max-w-[78%] rounded-[20px] px-4 py-3 text-sm shadow-sm ${
@@ -1950,11 +2058,21 @@ export function SeekingPanel({
                     }`}>
                       <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
                         <span className={`font-semibold ${own && kind !== "clue" ? "text-white/85" : "text-black/55"}`}>
-                          {kind === "clue" ? "Clue" : asText(message.playerName, asText(message.playerId, "system"))}
+                          {kind === "clue" ? "Clue" : kind === "evidence" ? `${asText(message.playerName, asText(message.playerId, "system"))} · Photo` : asText(message.playerName, asText(message.playerId, "system"))}
                         </span>
                         <span className={own && kind !== "clue" ? "text-white/65" : "text-black/45"}>{formatDateTime(message.createdAt)}</span>
                       </div>
                       <p className="mt-2 whitespace-pre-wrap">{asText(message.text)}</p>
+                      {hasImageAttachment ? (
+                        <a href={attachmentUrl ?? "#"} target="_blank" rel="noreferrer" className="mt-3 block overflow-hidden rounded-2xl border border-black/10 bg-white/70">
+                          <img src={attachmentUrl ?? ""} alt={asText(metadata.fileName, "evidence")} className="max-h-64 w-full object-cover" />
+                        </a>
+                      ) : null}
+                      {!hasImageAttachment && attachmentUrl ? (
+                        <a href={attachmentUrl} target="_blank" rel="noreferrer" className={`mt-3 inline-block text-xs font-semibold ${own && kind !== "clue" ? "text-white" : "text-accent"}`}>
+                          Open attachment
+                        </a>
+                      ) : null}
                     </article>
                   </div>
                 );
@@ -2159,6 +2277,31 @@ export function SeekingPanel({
           <div className="mt-4 rounded-xl border border-cyan-400/40 bg-cyan-100/70 p-4 text-sm">
             <p className="font-semibold text-cyan-950">Latest answer received</p>
             <p className="mt-1 text-cyan-950/80">{asText(latestAnswerData.value, "Open Ask to review the answer details.")}</p>
+          </div>
+        ) : null}
+
+        {showCatchReviewPrompt ? (
+          <div className="mt-4 rounded-xl border border-rose-400/35 bg-rose-50 p-4 text-sm shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="font-semibold text-rose-950">Catch claim pending review</p>
+                <p className="mt-1 text-rose-950/80">
+                  A seeker has submitted a catch claim. Decide here whether the round should end.
+                </p>
+                <p className="mt-2 text-xs text-rose-950/70">
+                  Claim {pendingCatchClaimId} | Expires {formatDateTime(pendingCatchClaim.expiresAt)}
+                </p>
+                <p className="mt-2 text-xs text-rose-950/60">{shortJson(pendingCatchClaim.evaluation ?? pendingCatchClaim.details)}</p>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => void handleResolveCatch("success")} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white">
+                  Confirm Catch
+                </button>
+                <button type="button" onClick={() => void handleResolveCatch("failed")} className="rounded-lg bg-rose-600 px-3 py-2 text-xs font-semibold text-white">
+                  Reject Catch
+                </button>
+              </div>
+            </div>
           </div>
         ) : null}
 

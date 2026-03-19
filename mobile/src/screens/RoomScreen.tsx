@@ -355,6 +355,9 @@ export function RoomScreen({
   const handleUpdateRoomConfig = useCallback(async (
     payload: {
       transitPackId?: string | null;
+      regionPresetId?: string | null;
+      regionPresetName?: string | null;
+      hideDurationSec?: number | null;
       borderPolygonGeoJSON?: Record<string, unknown> | null;
       hidingAreaGeoJSON?: Record<string, unknown> | null;
     },
@@ -365,6 +368,9 @@ export function RoomScreen({
       const result = await updateRoomConfig(httpBaseUrl, roomCode, {
         playerId,
         transitPackId: payload.transitPackId,
+        regionPresetId: payload.regionPresetId,
+        regionPresetName: payload.regionPresetName,
+        hideDurationSec: payload.hideDurationSec,
         borderPolygonGeoJSON: payload.borderPolygonGeoJSON,
         hidingAreaGeoJSON: payload.hidingAreaGeoJSON,
       });

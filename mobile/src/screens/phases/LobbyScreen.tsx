@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
-import MapView, { Marker, Polygon, Polyline, type LatLng, type Region } from "react-native-maps";
+import { HIDE_DURATION_OPTIONS, ROOM_REGION_PRESETS, findRoomRegionPreset, polygonGeoJsonFromPreset } from "@jetlag/shared/roomConfigPresets";
+import MapView, { Marker, Polygon, type LatLng, type Region } from "react-native-maps";
 import type { MapProvider, ProjectionPlayer, TransitPackSummary } from "../../types";
 
 const DEFAULT_REGION: Region = {
@@ -10,19 +11,13 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.07,
 };
 
-const DRAW_TARGET_OPTIONS = [
-  { key: "boundary", label: "Boundary" },
-  { key: "hidingArea", label: "Hide Area" },
-] as const;
-
-type DrawTarget = (typeof DRAW_TARGET_OPTIONS)[number]["key"];
-
 interface LobbyScreenProps {
   roomName?: string;
   players: ProjectionPlayer[];
   playerId: string;
   mapProvider?: MapProvider | string | null;
   transitPackId?: string | null;
+  config?: Record<string, unknown> | null;
   borderPolygonGeoJSON?: Record<string, unknown> | null;
   hidingAreaGeoJSON?: Record<string, unknown> | null;
   transitPacks: TransitPackSummary[];
@@ -34,6 +29,9 @@ interface LobbyScreenProps {
   onStartRound: () => void;
   onUpdateRoomConfig: (payload: {
     transitPackId?: string | null;
+    regionPresetId?: string | null;
+    regionPresetName?: string | null;
+    hideDurationSec?: number | null;
     borderPolygonGeoJSON?: Record<string, unknown> | null;
     hidingAreaGeoJSON?: Record<string, unknown> | null;
   }) => Promise<void>;
@@ -119,28 +117,6 @@ function extractGeoJsonPolygonPoints(value: unknown): LatLng[] {
   return points;
 }
 
-function polygonGeoJsonFromPoints(points: LatLng[]): Record<string, unknown> {
-  const ring = points.map((point) => [Number(point.longitude.toFixed(6)), Number(point.latitude.toFixed(6))]);
-  const closedRing = [...ring, ring[0]];
-  return {
-    type: "Feature",
-    properties: {},
-    geometry: {
-      type: "Polygon",
-      coordinates: [closedRing],
-    },
-  };
-}
-
-function serializePoints(points: LatLng[]): string {
-  return JSON.stringify(
-    points.map((point) => ({
-      latitude: Number(point.latitude.toFixed(6)),
-      longitude: Number(point.longitude.toFixed(6)),
-    })),
-  );
-}
-
 function regionFromPoints(points: LatLng[]): Region | null {
   if (points.length === 0) {
     return null;
@@ -165,6 +141,7 @@ export function LobbyScreen({
   playerId,
   mapProvider,
   transitPackId,
+  config,
   borderPolygonGeoJSON,
   hidingAreaGeoJSON,
   transitPacks,
@@ -181,18 +158,38 @@ export function LobbyScreen({
   const waitingForOthers = Boolean(viewerPreparedNextRound) && Boolean(waitingForNextRound);
   const normalizedMapProvider = String(mapProvider ?? "GOOGLE").toUpperCase() as MapProvider;
   const [draftTransitPackId, setDraftTransitPackId] = useState<string>(String(transitPackId ?? ""));
-  const [drawTarget, setDrawTarget] = useState<DrawTarget>("boundary");
-  const [boundaryDraft, setBoundaryDraft] = useState<LatLng[] | null>(null);
-  const [hidingAreaDraft, setHidingAreaDraft] = useState<LatLng[] | null>(null);
   const [geometryError, setGeometryError] = useState<string | null>(null);
+  const [draftRegionPresetId, setDraftRegionPresetId] = useState<string>(String(config?.regionPresetId ?? ""));
+  const [draftHideDurationSec, setDraftHideDurationSec] = useState<number>(() => {
+    const value = Number(
+      (config?.hideDurationSec ?? asRecord(config?.timers).hideSeconds) ?? 30 * 60,
+    );
+    return Number.isFinite(value) && value > 0 ? value : 30 * 60;
+  });
 
   const mapRef = useRef<MapView | null>(null);
 
   const savedBoundaryPoints = useMemo(() => extractGeoJsonPolygonPoints(borderPolygonGeoJSON), [borderPolygonGeoJSON]);
   const savedHidingAreaPoints = useMemo(() => extractGeoJsonPolygonPoints(hidingAreaGeoJSON), [hidingAreaGeoJSON]);
-  const displayBoundaryPoints = boundaryDraft ?? savedBoundaryPoints;
-  const displayHidingAreaPoints = hidingAreaDraft ?? savedHidingAreaPoints;
-  const activeDraftPoints = drawTarget === "boundary" ? displayBoundaryPoints : displayHidingAreaPoints;
+  const savedRegionPresetId = String(config?.regionPresetId ?? "");
+  const savedHideDurationSec = useMemo(() => {
+    const value = Number((config?.hideDurationSec ?? asRecord(config?.timers).hideSeconds) ?? 30 * 60);
+    return Number.isFinite(value) && value > 0 ? value : 30 * 60;
+  }, [config]);
+  const selectedRegionPreset = useMemo(
+    () => findRoomRegionPreset(draftRegionPresetId || savedRegionPresetId),
+    [draftRegionPresetId, savedRegionPresetId],
+  );
+  const presetBoundaryPoints = useMemo(
+    () => (selectedRegionPreset?.boundary ?? []).map((point) => ({ latitude: point.lat, longitude: point.lng })),
+    [selectedRegionPreset],
+  );
+  const presetHidingAreaPoints = useMemo(
+    () => (selectedRegionPreset?.hidingArea ?? []).map((point) => ({ latitude: point.lat, longitude: point.lng })),
+    [selectedRegionPreset],
+  );
+  const displayBoundaryPoints = presetBoundaryPoints.length > 0 ? presetBoundaryPoints : savedBoundaryPoints;
+  const displayHidingAreaPoints = presetHidingAreaPoints.length > 0 ? presetHidingAreaPoints : savedHidingAreaPoints;
   const playerMarkers = useMemo(() => {
     return players
       .map((player) => {
@@ -231,71 +228,29 @@ export function LobbyScreen({
     setDraftTransitPackId(String(transitPackId ?? ""));
   }, [transitPackId]);
 
-  const boundaryChanged = boundaryDraft !== null && serializePoints(boundaryDraft) !== serializePoints(savedBoundaryPoints);
-  const hidingAreaChanged = hidingAreaDraft !== null && serializePoints(hidingAreaDraft) !== serializePoints(savedHidingAreaPoints);
-  const geometryValidationReason =
-    boundaryDraft !== null && boundaryDraft.length > 0 && boundaryDraft.length < 3
-      ? "Boundary draft needs at least 3 vertices"
-      : hidingAreaDraft !== null && hidingAreaDraft.length > 0 && hidingAreaDraft.length < 3
-        ? "Hide area draft needs at least 3 vertices"
-        : null;
+  useEffect(() => {
+    setDraftRegionPresetId(savedRegionPresetId || ROOM_REGION_PRESETS[0]?.id || "");
+  }, [savedRegionPresetId]);
+
+  useEffect(() => {
+    setDraftHideDurationSec(savedHideDurationSec);
+  }, [savedHideDurationSec]);
+
   const configChanged =
     draftTransitPackId !== String(transitPackId ?? "") ||
-    boundaryChanged ||
-    hidingAreaChanged;
+    draftRegionPresetId !== savedRegionPresetId ||
+    draftHideDurationSec !== savedHideDurationSec;
   const configDisabledReason = !me
     ? "Only joined players can update room config"
     : waitingForOthers
       ? "Room config unlocks after every player prepares next round"
     : busyAction && !configBusy
       ? "Another action is in progress"
-      : geometryValidationReason
-        ? geometryValidationReason
+      : !selectedRegionPreset
+        ? "Choose a district preset first"
         : !configChanged
           ? "No config changes to save"
           : null;
-
-  const updateActiveDraft = useCallback((updater: (current: LatLng[]) => LatLng[]) => {
-    setGeometryError(null);
-    if (drawTarget === "boundary") {
-      setBoundaryDraft((prev) => updater(prev ?? savedBoundaryPoints));
-      return;
-    }
-    setHidingAreaDraft((prev) => updater(prev ?? savedHidingAreaPoints));
-  }, [drawTarget, savedBoundaryPoints, savedHidingAreaPoints]);
-
-  const handleMapPress = useCallback((event: { nativeEvent?: { coordinate?: { latitude?: number; longitude?: number } } }) => {
-    if (!me) {
-      return;
-    }
-    const coordinate = event?.nativeEvent?.coordinate;
-    if (!coordinate) {
-      return;
-    }
-    const lat = toFiniteNumber(coordinate.latitude);
-    const lng = toFiniteNumber(coordinate.longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-      return;
-    }
-    updateActiveDraft((current) => [...current, { latitude: Number(lat), longitude: Number(lng) }].slice(-40));
-  }, [me, updateActiveDraft]);
-
-  const handleUndoVertex = useCallback(() => {
-    updateActiveDraft((current) => current.slice(0, -1));
-  }, [updateActiveDraft]);
-
-  const handleClearDraft = useCallback(() => {
-    updateActiveDraft(() => []);
-  }, [updateActiveDraft]);
-
-  const handleRestoreSaved = useCallback(() => {
-    setGeometryError(null);
-    if (drawTarget === "boundary") {
-      setBoundaryDraft(null);
-      return;
-    }
-    setHidingAreaDraft(null);
-  }, [drawTarget]);
 
   const handleCenterOnShapes = useCallback(() => {
     if (!mapRef.current) {
@@ -327,35 +282,34 @@ export function LobbyScreen({
     try {
       await onUpdateRoomConfig({
         transitPackId: draftTransitPackId || undefined,
-        borderPolygonGeoJSON: boundaryDraft === null
-          ? undefined
-          : boundaryDraft.length >= 3
-            ? polygonGeoJsonFromPoints(boundaryDraft)
-            : null,
-        hidingAreaGeoJSON: hidingAreaDraft === null
-          ? undefined
-          : hidingAreaDraft.length >= 3
-            ? polygonGeoJsonFromPoints(hidingAreaDraft)
-            : null,
+        regionPresetId: selectedRegionPreset?.id ?? null,
+        regionPresetName: selectedRegionPreset ? `${selectedRegionPreset.city} / ${selectedRegionPreset.district}` : null,
+        hideDurationSec: draftHideDurationSec,
+        borderPolygonGeoJSON: selectedRegionPreset
+          ? (polygonGeoJsonFromPreset(selectedRegionPreset.boundary) as Record<string, unknown>)
+          : null,
+        hidingAreaGeoJSON: selectedRegionPreset
+          ? (polygonGeoJsonFromPreset(selectedRegionPreset.hidingArea) as Record<string, unknown>)
+          : null,
       });
-      setBoundaryDraft(null);
-      setHidingAreaDraft(null);
       setGeometryError(null);
     } catch (caught) {
       setGeometryError(caught instanceof Error ? caught.message : "Failed to save room config");
     }
   }, [
-    boundaryDraft,
     configDisabledReason,
     draftTransitPackId,
-    hidingAreaDraft,
+    draftHideDurationSec,
     onUpdateRoomConfig,
+    selectedRegionPreset,
   ]);
 
   return (
     <View style={styles.wrap}>
       <Text style={styles.title}>Lobby</Text>
-      <Text style={styles.desc}>Set ready first. Configure the room map, then draw the shared boundary and hide area.</Text>
+      <Text style={styles.desc}>
+        Configure the room by preset district range, transit station basis, and hiding duration before the round starts.
+      </Text>
       {waitingForOthers ? (
         <Text style={styles.hintText}>
           You already prepared the next round. Waiting for others: {nextRoundReadyCount ?? 0}/{players.length}.
@@ -366,7 +320,9 @@ export function LobbyScreen({
         <Text style={styles.playersTitle}>Room Config</Text>
         <Text style={styles.configMeta}>Room: {roomName ?? "Untitled Room"}</Text>
         <Text style={styles.configMeta}>Auto POI provider: {normalizedMapProvider}</Text>
-        <Text style={styles.configMeta}>Current transit: {transitPackId ?? "default"}</Text>
+        <Text style={styles.configMeta}>Current transit basis: {transitPackId ?? "default"}</Text>
+        <Text style={styles.configMeta}>Current district preset: {savedRegionPresetId || "not set"}</Text>
+        <Text style={styles.configMeta}>Hide duration: {Math.round(savedHideDurationSec / 60)} min</Text>
         <Text style={styles.configMeta}>Boundary vertices: {displayBoundaryPoints.length}</Text>
         <Text style={styles.configMeta}>Hide area vertices: {displayHidingAreaPoints.length}</Text>
 
@@ -374,7 +330,30 @@ export function LobbyScreen({
           Lookup provider now follows player location and transit context automatically. The visible iPhone map still uses the native map view.
         </Text>
 
-        <Text style={styles.subTitle}>Transit Pack</Text>
+        <Text style={styles.subTitle}>District Range</Text>
+        <View style={styles.packList}>
+          {ROOM_REGION_PRESETS.map((preset) => {
+            const active = draftRegionPresetId === preset.id;
+            return (
+              <Pressable
+                key={preset.id}
+                style={[styles.packButton, active ? styles.packButtonActive : null]}
+                onPress={() => setDraftRegionPresetId(preset.id)}
+              >
+                <Text style={[styles.packButtonTitle, active ? styles.choiceButtonTextActive : null]}>
+                  {preset.label}
+                </Text>
+                <Text style={styles.packButtonMeta}>
+                  {preset.city} / {preset.district}
+                </Text>
+                <Text style={styles.configHint}>{preset.summary}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.separator} />
+        <Text style={styles.subTitle}>Transit Station Basis</Text>
         {transitPacks.length === 0 ? (
           <Text style={styles.configHint}>No transit pack list loaded. Server default will be used.</Text>
         ) : (
@@ -404,32 +383,37 @@ export function LobbyScreen({
         ) : null}
 
         <View style={styles.separator} />
-        <Text style={styles.subTitle}>Lobby Geometry</Text>
-        <Text style={styles.configHint}>Tap on the map to add vertices. Save writes both shapes into room config.</Text>
-
+        <Text style={styles.subTitle}>Hide Duration</Text>
         <View style={styles.optionWrap}>
-          {DRAW_TARGET_OPTIONS.map((item) => {
-            const active = drawTarget === item.key;
+          {HIDE_DURATION_OPTIONS.map((option) => {
+            const active = draftHideDurationSec === option.seconds;
             return (
               <Pressable
-                key={item.key}
+                key={option.seconds}
                 style={[styles.choiceButton, active ? styles.choiceButtonActive : null]}
-                onPress={() => setDrawTarget(item.key)}
+                onPress={() => setDraftHideDurationSec(option.seconds)}
               >
                 <Text style={[styles.choiceButtonText, active ? styles.choiceButtonTextActive : null]}>
-                  {item.label}
+                  {option.label}
                 </Text>
               </Pressable>
             );
           })}
         </View>
-        <Text style={styles.hintText}>Transit packs support nearest-station and route-context checks during seeking.</Text>
+        <Text style={styles.configHint}>
+          Transit basis is used for nearest-station and route-context checks. It is not a visual map theme.
+        </Text>
+
+        <View style={styles.separator} />
+        <Text style={styles.subTitle}>Preset Preview</Text>
+        <Text style={styles.configHint}>
+          The selected district preset defines both the playable boundary and the initial hide area. Manual polygon drawing is no longer the primary workflow.
+        </Text>
 
         <MapView
           ref={mapRef}
           style={styles.mapView}
           initialRegion={DEFAULT_REGION}
-          onPress={handleMapPress}
         >
           {displayBoundaryPoints.length >= 3 ? (
             <Polygon
@@ -447,12 +431,6 @@ export function LobbyScreen({
               strokeWidth={2}
             />
           ) : null}
-          {drawTarget === "boundary" && activeDraftPoints.length >= 2 ? (
-            <Polyline coordinates={activeDraftPoints} strokeColor="#0a5f66" strokeWidth={2} />
-          ) : null}
-          {drawTarget === "hidingArea" && activeDraftPoints.length >= 2 ? (
-            <Polyline coordinates={activeDraftPoints} strokeColor="#8f3f68" strokeWidth={2} />
-          ) : null}
           {playerMarkers.map((marker) => (
             <Marker
               key={marker.id}
@@ -464,37 +442,13 @@ export function LobbyScreen({
           ))}
         </MapView>
 
-        <Text style={styles.configHint}>
-          Editing {drawTarget === "boundary" ? "Boundary" : "Hide Area"} | current vertices {activeDraftPoints.length}
-        </Text>
-
         <View style={styles.actionRow}>
-          <Pressable
-            style={[styles.secondaryButton, activeDraftPoints.length === 0 ? styles.buttonDisabled : null]}
-            onPress={handleUndoVertex}
-            disabled={activeDraftPoints.length === 0}
-          >
-            <Text style={styles.secondaryButtonText}>Undo Vertex</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.secondaryButton, activeDraftPoints.length === 0 ? styles.buttonDisabled : null]}
-            onPress={handleClearDraft}
-            disabled={activeDraftPoints.length === 0}
-          >
-            <Text style={styles.secondaryButtonText}>Clear Shape</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.actionRow}>
-          <Pressable style={styles.secondaryButton} onPress={handleRestoreSaved}>
-            <Text style={styles.secondaryButtonText}>Restore Saved</Text>
-          </Pressable>
           <Pressable
             style={[styles.secondaryButton, displayBoundaryPoints.length + displayHidingAreaPoints.length === 0 ? styles.buttonDisabled : null]}
             onPress={handleCenterOnShapes}
             disabled={displayBoundaryPoints.length + displayHidingAreaPoints.length === 0}
           >
-            <Text style={styles.secondaryButtonText}>Center On Shapes</Text>
+            <Text style={styles.secondaryButtonText}>Center On District</Text>
           </Pressable>
         </View>
 

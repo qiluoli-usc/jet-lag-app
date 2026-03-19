@@ -143,6 +143,9 @@ export async function createRoom(
   payload: {
     name: string;
     transitPackId?: string | null;
+    regionPresetId?: string | null;
+    regionPresetName?: string | null;
+    hideDurationSec?: number | null;
   },
 ): Promise<CreateRoomResponse> {
   return request<CreateRoomResponse>(httpBaseUrl, "/rooms", {
@@ -355,6 +358,9 @@ export async function updateRoomConfig(
   payload: {
     playerId: string;
     transitPackId?: string | null;
+    regionPresetId?: string | null;
+    regionPresetName?: string | null;
+    hideDurationSec?: number | null;
     borderPolygonGeoJSON?: Record<string, unknown> | null;
     hidingAreaGeoJSON?: Record<string, unknown> | null;
   },
